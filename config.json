@@ -1,0 +1,31 @@
+{
+  "tracking": {
+    "confidence_threshold": 0.5,
+    "similarity_threshold": 0.7,
+    "yolo_model": "yolov8n.pt",
+    "max_age": 50,
+    "n_init": 3,
+    "check_interval": 30
+  },
+  "display": {
+    "update_interval": 0.5,
+    "figure_size_per_camera": [5, 4],
+    "show_unmatched_cars": true,
+    "show_tracking_ids": true
+  },
+  "data": {
+    "data_directory": "data",
+    "supported_formats": [".jpg", ".jpeg", ".png"],
+    "auto_scan": true
+  },
+  "cameras": {
+    "default_count": 4,
+    "max_cameras": 9,
+    "headless_browser": true
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(levelname)s - %(message)s",
+    "file": null
+  }
+}
