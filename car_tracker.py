@@ -13,12 +13,10 @@ from typing import Dict, List, Tuple, Optional
 import logging
 from datetime import datetime
 
-# Computer vision imports
 from ultralytics import YOLO
 from deep_sort_realtime import DeepSort
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Local imports
 from retrieve import (
     load_camera_data,
     select_random_camera,
@@ -28,7 +26,6 @@ from retrieve import (
 from multi_camera import MultiCameraViewer
 from playwright.async_api import async_playwright
 
-# Set up logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -42,23 +39,21 @@ class CarTracker:
             data_dir (str): Directory containing car reference images
             confidence_threshold (float): Minimum confidence for car detection
         """
+
         self.num_cameras = num_cameras
         self.data_dir = Path(data_dir)
         self.confidence_threshold = confidence_threshold
         
-        # Initialize models
         self.yolo_model = None
         self.tracker = None
         
-        # Camera and tracking data
         self.cameras_data = load_camera_data()
         self.camera_objects = []
         self.reference_cars = {}
         self.car_features = {}
         self.last_data_check = 0
-        self.check_interval = 30  # Check for new cars every 30 seconds
+        self.check_interval = 5
         
-        # Browser and visualization
         self.browser = None
         self.playwright = None
         self.fig = None
@@ -67,15 +62,14 @@ class CarTracker:
         """Initialize all components of the car tracking system."""
         logger.info("Initializing car tracking system...")
         
-        # Initialize YOLO model
         try:
-            self.yolo_model = YOLO('yolov8n.pt')  # Using nano model for speed
+            self.yolo_model = YOLO('yolov8n.pt')  # nano model for speed
             logger.info("YOLO model loaded successfully")
         except Exception as e:
             logger.error(f"Failed to load YOLO model: {e}")
             return False
             
-        # Initialize DeepSORT tracker
+        # DeepSORT tracker
         try:
             self.tracker = DeepSort(max_age=50, n_init=3)
             logger.info("DeepSORT tracker initialized")
@@ -83,10 +77,9 @@ class CarTracker:
             logger.error(f"Failed to initialize DeepSORT: {e}")
             return False
         
-        # Load reference car data
+        # reference car data
         self.load_reference_cars()
         
-        # Initialize camera feeds
         if not await self.initialize_cameras():
             logger.error("Failed to initialize camera feeds")
             return False
@@ -109,7 +102,6 @@ class CarTracker:
                 car_uuid = uuid_dir.name
                 car_images = []
                 
-                # Load all images for this car
                 for img_file in uuid_dir.glob("*.jpg") or uuid_dir.glob("*.png") or uuid_dir.glob("*.jpeg"):
                     try:
                         img = cv2.imread(str(img_file))
@@ -133,20 +125,18 @@ class CarTracker:
         features = []
         for img in images:
             try:
-                # Detect cars in the image
                 results = self.yolo_model(img)
                 
                 for result in results:
                     boxes = result.boxes
                     if boxes is not None:
                         for box in boxes:
-                            # Only process car detections (class 2 in COCO dataset)
+                            # process car detections--class 2 in COCO dataset
                             if int(box.cls) == 2 and float(box.conf) > self.confidence_threshold:
-                                # Extract the car region
                                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                                 car_crop = img[y1:y2, x1:x2]
                                 
-                                # Create a simple feature vector (color histogram + HOG)
+                                # simple feature vector, color histogram + HOG
                                 feature = self.create_feature_vector(car_crop)
                                 if feature is not None:
                                     features.append(feature)
@@ -162,15 +152,12 @@ class CarTracker:
     def create_feature_vector(self, image: np.ndarray) -> Optional[np.ndarray]:
         """Create a feature vector from a car image crop."""
         try:
-            # Resize image to standard size
             resized = cv2.resize(image, (64, 64))
             
-            # Color histogram features
             hist_b = cv2.calcHist([resized], [0], None, [16], [0, 256])
             hist_g = cv2.calcHist([resized], [1], None, [16], [0, 256])
             hist_r = cv2.calcHist([resized], [2], None, [16], [0, 256])
             
-            # Normalize histograms
             hist_b = hist_b.flatten() / np.sum(hist_b)
             hist_g = hist_g.flatten() / np.sum(hist_g)
             hist_r = hist_r.flatten() / np.sum(hist_r)
@@ -187,7 +174,6 @@ class CarTracker:
     async def initialize_cameras(self):
         """Initialize the camera feeds using the multi-camera viewer."""
         try:
-            # Start playwright and browser
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(
                 channel="chrome",
@@ -195,7 +181,6 @@ class CarTracker:
                 args=["--disable-blink-features=AutomationControlled"]
             )
             
-            # Select random cameras
             selected_cameras = {}
             camera_ids = list(self.cameras_data.keys())
             random.shuffle(camera_ids)
@@ -205,10 +190,8 @@ class CarTracker:
                 camera_name = self.cameras_data[camera_id]
                 selected_cameras[camera_id] = camera_name
                 
-            # Create figure and subplots
             plt.ion()
             
-            # Determine grid dimensions
             if self.num_cameras <= 3:
                 rows, cols = 1, self.num_cameras
             elif self.num_cameras <= 6:
@@ -216,11 +199,11 @@ class CarTracker:
             else:
                 rows, cols = 3, 3
                 
-            # Create figure with GridSpec
+            # create fig with gridspec
             self.fig = plt.figure(figsize=(cols*5, rows*4))
             gs = GridSpec(rows, cols, figure=self.fig)
             
-            # Initialize camera streams
+            # init camera streams
             self.camera_objects = []
             index = 0
             
@@ -247,7 +230,7 @@ class CarTracker:
                         'page': page,
                         'im_display': im_display,
                         'ax': ax,
-                        'tracker_id': index  # Unique tracker ID for this camera
+                        'tracker_id': index  # unique tracker ID for camera
                     })
                     
                 index += 1
@@ -267,7 +250,6 @@ class CarTracker:
             
         self.last_data_check = current_time
         
-        # Check for new directories
         if not self.data_dir.exists():
             return
             
@@ -306,10 +288,8 @@ class CarTracker:
         detected_cars = []
         
         try:
-            # Run YOLO detection
             results = self.yolo_model(frame)
             
-            # Prepare detections for DeepSORT
             detections = []
             confidences = []
             
@@ -317,12 +297,12 @@ class CarTracker:
                 boxes = result.boxes
                 if boxes is not None:
                     for box in boxes:
-                        # Only process car detections (class 2 in COCO dataset)
+                        # process car detections: class 2 in COCO dataset
                         if int(box.cls) == 2 and float(box.conf) > self.confidence_threshold:
                             x1, y1, x2, y2 = map(int, box.xyxy[0])
                             conf = float(box.conf)
                             
-                            # Convert to DeepSORT format: [x, y, w, h]
+                            # DeepSORT format: [x, y, w, h]
                             detection = [x1, y1, x2 - x1, y2 - y1]
                             detections.append(detection)
                             confidences.append(conf)
