@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+
+<body>
+    <div class="controls" style="margin: auto; text-align: center;">
+        <select id="camera-select">
+            <option value="">bruh</option>
+            {% for uuid, name in cameras.items() %}
+            <option value="{{ uuid }}">{{ name }}</option>
+            {% endfor %}
+        </select>
+        <button id="go-btn">Go</button>
+    </div>
+
+    <br>
+
+    <div id="video-container" style="margin: auto;">
+        <img id="video-player" src="" alt="Select a camera to start stream" style="display: none; max-width: 900px; margin:auto;">
+    </div>
+
+    <script>
+        const videoImg = document.getElementById('video-player');
+        const cameraSelect = document.getElementById('camera-select');
+        const goBtn = document.getElementById('go-btn');
+
+        function loadStream(uuid) {
+            const videoSrc = `/video_feed?uuid=${uuid}`;
+            videoImg.style.display = 'block';
+            videoImg.src = videoSrc;
+        }
+
+        goBtn.addEventListener('click', () => {
+            const selectedUuid = cameraSelect.value;
+            if (selectedUuid) {
+                loadStream(selectedUuid + '&t=' + new Date().getTime());
+            } else {
+                alert("asdfasdfasdfasdf");
+            }
+        });
+    </script>
+</body>
+
+</html>

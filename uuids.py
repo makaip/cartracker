@@ -11,7 +11,7 @@ response.raise_for_status()
 soup = BeautifulSoup(response.text, 'html.parser')
 
 # div by webpartid
-target_div = soup.find('div', attrs={'webpartid': '4163b065-726c-4dba-9683-87907cce1070'})
+target_div = soup.find('div', attrs={'id': 'WebPartWPQ5'})
 if not target_div:
     raise Exception("Target div not found.")
 
