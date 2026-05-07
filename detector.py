@@ -4,6 +4,9 @@ from ultralytics import YOLO
 import logging
 
 import torch
+import torch.nn as nn
+import torchvision.models as models
+
 print(torch.cuda.is_available())
 
 
@@ -18,3 +21,5 @@ def detect_cars(frame_array: np.ndarray) -> np.ndarray:
     results = model(frame_array, classes=[2, 3, 5, 7], verbose=False)
     annotated_frame = results[0].plot()
     return annotated_frame
+
+

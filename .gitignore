@@ -1,2 +1,4 @@
 yolov8*.pt
 __pycache__
+datasets/
+.env
