@@ -1,0 +1,7 @@
+job:
+  poll_seconds: 10
+  script: train_job.sh
+remote:
+  dir: /mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack
+  host: 131.91.163.212
+  user: jpindell2022

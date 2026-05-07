@@ -8,6 +8,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 import torchvision.models as models
 import torchvision.transforms as transforms
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 import xml.etree.ElementTree as ET
 
@@ -21,24 +24,23 @@ class EmbeddingNet(nn.Module):
     def __init__(self):
         super().__init__()
 
-        base = models.resnet50(pretrained=True)
-        self.encoder = nn.Sequential(*list(base.children())[:-1])  # remove final classification layer
+        base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        self.encoder = nn.Sequential(*list(base.children())[:-1])   # remove final classification layer
         self.fc1 = nn.Linear(2048, 512)                             # resnet50 outputs 2048-dim features
         self.fc2 = nn.Linear(512, 128)                              # replace it with a different one
     
     def forward(self, x):
-        x = self.encoder(x).squeeze()
-        x = self.fc1(x)
+        x = self.encoder(x).flatten(1).clone()  # use flatten(1) over squeeze() squeeze() with batch_size=1 collapses batch dim too
+        # .clone() breaks the inplace version chain
+        x = torch.nn.functional.relu(self.fc1(x))
         x = self.fc2(x)
-
         return nn.functional.normalize(x, p=2, dim=1)  # L2 norm. cosine similarity
-
 
 class VeRi(torch.utils.data.Dataset):
     def __init__(self, data_dir, file, transform=None):
         self.root = data_dir
         self.transform = transform or transforms.ToTensor()
-        self.imgs, self.vid2imgs = self._parse_labels(file)
+        self.imgs, self.vid2imgs = self._parse_labels(file)     # vid = Vehicle ID
 
     def _parse_labels(self, label_file):
         with open(label_file, 'r', encoding='gb2312', errors='ignore') as f:
@@ -51,7 +53,7 @@ class VeRi(torch.utils.data.Dataset):
         imgs = []
         vid2imgs = {}
 
-        for item in root.findall('.//Item'):
+        for item in root.findall('.//Item'):                # pair each VID with its images
             img_name = item.get('imageName')
             vid = item.get('vehicleID')
             imgs.append((img_name, vid))
@@ -84,11 +86,31 @@ class VeRi(torch.utils.data.Dataset):
 
         return anchor, positive, negative
 
+# https://github.com/seba-1511/dist_tuto.pth/blob/gh-pages/train_dist.py
+class Partition(object):
+    def __init__(self, data, index):
+        self.data = data
+        self.index = index
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, index):
+        data_idx = self.index[index]
+        return self.data[data_idx]
+
+
 if __name__ == "__main__":
     print(torch.cuda.is_available())
 
-    model = EmbeddingNet()
-    model.to("cuda")
+    # https://docs.pytorch.org/tutorials/intermediate/ddp_tutorial.html
+    dist.init_process_group(backend='nccl')
+    local_rank = int(os.environ['LOCAL_RANK'])
+
+    torch.cuda.set_device(local_rank)
+
+    model = EmbeddingNet().cuda(local_rank)
+    model = DDP(model, device_ids=[local_rank], broadcast_buffers=False)
 
     loss_fn = nn.TripletMarginLoss(margin=1.0)
     
@@ -100,17 +122,28 @@ if __name__ == "__main__":
     ])
 
     dataset = VeRi(data_dir='datasets/VeRi/image_train', file='datasets/VeRi/train_label.xml', transform=transform)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+    sampler = DistributedSampler(dataset, shuffle=True)
+    dataloader = torch.utils.data.DataLoader(dataset, 
+                                             batch_size=256, 
+                                             sampler=sampler, 
+                                             num_workers=8, 
+                                             pin_memory=True)
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     epochs = 100
     
     for epoch in range(epochs):
+        sampler.set_epoch(epoch)
         model.train()
         loss = 0.0
 
         for anchors, positives, negatives in dataloader:
-            anchors, positives, negatives = anchors.to("cuda"), positives.to("cuda"), negatives.to("cuda")
+            anchors = anchors.cuda(local_rank, non_blocking=True)
+            positives = positives.cuda(local_rank, non_blocking=True)
+            negatives = negatives.cuda(local_rank, non_blocking=True)
+
+            optimizer.zero_grad()
 
             anchor_emb = model(anchors)
             positive_emb = model(positives)
@@ -121,10 +154,11 @@ if __name__ == "__main__":
 
             batch_loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
 
         print(f"Epoch {epoch+1}/{epochs}, Loss: {loss/len(dataloader):.4f}")
     
+    dist.destroy_process_group()
+
     model.eval()
 
     with torch.no_grad():
@@ -140,3 +174,5 @@ if __name__ == "__main__":
 
             print(f"Sample {i}: Pos Dist={pos_dist.item():.4f}, Neg Dist={neg_dist.item():.4f}")
     
+    if local_rank == 0:
+        torch.save(model.module.state_dict(), "/mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack/results/veri_embedding_model.pth")
