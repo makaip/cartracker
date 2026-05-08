@@ -1,16 +1,19 @@
-import os
 import random
 from PIL import Image
 import re
+import copy
+import os
+from collections import defaultdict
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 import torchvision.models as models
 import torchvision.transforms as transforms
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data.distributed import DistributedSampler
+from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 
 import xml.etree.ElementTree as ET
 
@@ -41,6 +44,9 @@ class VeRi(torch.utils.data.Dataset):
         self.root = data_dir
         self.transform = transform or transforms.ToTensor()
         self.imgs, self.vid2imgs = self._parse_labels(file)     # vid = Vehicle ID
+
+        self.unique_vids = sorted(list(self.vid2imgs.keys()))
+        self.vid2idx = {vid: idx for idx, vid in enumerate(self.unique_vids)}
 
     def _parse_labels(self, label_file):
         with open(label_file, 'r', encoding='gb2312', errors='ignore') as f:

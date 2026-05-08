@@ -31,7 +31,10 @@ def generate_frames(camera_uuid: str) -> bytes:
                 last_real_time = time.time()
 
             frame_array = frame.to_ndarray(format='bgr24')
-            annotated_array = detect_cars(frame_array)
+
+            results = detect_cars(frame_array)
+            annotated_array = results[0].plot()
+
             img = Image.fromarray(cv2.cvtColor(annotated_array, cv2.COLOR_BGR2RGB))
             
             buf = BytesIO()

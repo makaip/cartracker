@@ -1,5 +1,7 @@
-yolov8*.pt
+*.pt
 __pycache__
 datasets/
 .env
 results/
+.venv/
+media/
