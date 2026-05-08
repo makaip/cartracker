@@ -111,51 +111,7 @@ def main():
         print(f"Failed to parse Slurm Job ID. Output: {result.stderr or result.stdout}")
         sys.exit(1)
 
-    print(f"Submitted Job ID: {job_id}")
-
-    print("\n[6/7] Waiting for job to complete...")
-    try:
-        load = ["-", "\\", "|", "/"]
-        prev_status = ""
-        i = 0
-        while True:
-            status_result = run_ssh(remote_uri, f"squeue -j '{job_id}' -h -o '%T'", check=False)
-            status = status_result.stdout.strip()
-
-            if not status:
-                break
-
-            if status == prev_status:
-                print(f"  Job {job_id} status: {status} \t {load[i % len(load)]} \r")
-                prev_status = status
-            else:
-                print(f"  Job {job_id} status: {status}")
-                prev_status = status
-
-            time.sleep(poll_seconds)
-
-    except KeyboardInterrupt:
-        print(f"\nPolling interrupted! Job {job_id} is still running on the cluster.")
-        print(f"To cancel it, run: ssh {remote_uri} scancel {job_id}")
-        sys.exit(1)
-
-    state_result = run_ssh(remote_uri, f"sacct -j '{job_id}' --format=State --noheader 2>/dev/null | head -n 1 | xargs", check=False)
-    final_state = state_result.stdout.strip() or "UNKNOWN"
-    print(f"Job {job_id} finished with state: {final_state}")
-
-    print("\n[7/7] Syncing results back to local machine...")
-    
-    try:
-        local_results_dir.mkdir(parents=True, exist_ok=True)
-        print("Using scp to sync remote results to local results/ directory...")
-        run_cmd(["scp", "-r", f"{remote_uri}:{remote_dir}/results/", str(project_dir)])
-    except Exception as e:
-        print(f"Failed to sync results back: {e}")
-
-    if not final_state.startswith("COMPLETED"):
-        print(f"\nWarning: Slurm job state is {final_state}. Check logs in {local_results_dir}")
-
-    print("\nDone.")
+    print(f"Submitted Job ID: {job_id}. Email will be recieved when job completes.")
 
 if __name__ == "__main__":
     main()

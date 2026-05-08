@@ -11,7 +11,7 @@
 
 set -Eeuo pipefail
 
-WORKDIR="${RUN_WORKDIR:-${SLURM_SUBMIT_DIR:-/mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack}}"
+WORKDIR="${RUN_WORKDIR:-${SLURM_SUBMIT_DIR:-/mnt/beegfs/home/jpindell2022/ouri_project/mltests/caridentify}}"
 VENV_PATH="${VENV_DIR:-$WORKDIR/.venv}"
 cd "$WORKDIR"
 

@@ -181,4 +181,4 @@ if __name__ == "__main__":
             print(f"Sample {i}: Pos Dist={pos_dist.item():.4f}, Neg Dist={neg_dist.item():.4f}")
     
     if local_rank == 0:
-        torch.save(model.module.state_dict(), "/mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack/results/veri_embedding_model.pth")
+        torch.save(model.module.state_dict(), "/mnt/beegfs/home/jpindell2022/ouri_project/mltests/caridentify/results/veri_embedding_model.pth")

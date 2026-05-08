@@ -9,6 +9,7 @@ from werkzeug.utils import secure_filename
 from retrieve import generate_frames
 import database
 
+# ssh -L 8765:compute-node-name:8765 user@cluster.edu
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads/'

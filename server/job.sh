@@ -8,29 +8,34 @@
 #SBATCH --output=slurm-%j.out     # Standard output log
 #SBATCH --error=slurm-%j.err      # Error log file
 
-
 set -Eeuo pipefail
 
 WORKDIR="${RUN_WORKDIR:-${SLURM_SUBMIT_DIR:-/mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack}}"
 VENV_PATH="${VENV_DIR:-$WORKDIR/.venv}"
+COMPUTE_NODE="$(hostname --fqdn 2>/dev/null || hostname)"
+
 cd "$WORKDIR"
 
-echo "Running on host: $(hostname)" 
-echo "Working directory: $WORKDIR"
-echo "Virtual environment: $VENV_PATH"
-echo "Start time: $(date)"
+# ssh -L 8765:${COMPUTE_NODE}:8765 $USER@131.91.163.212
+# WebSocket endpoint: ws://localhost:8765
 
-scontrol show job $SLURM_JOB_ID
+echo " Slurm Job ID  : $SLURM_JOB_ID"
+echo " Compute node  : $COMPUTE_NODE"
+echo " Working dir   : $WORKDIR"
+echo " Venv          : $VENV_PATH"
+echo " Start time    : $(date --iso-8601=seconds)"
+
+scontrol show job "$SLURM_JOB_ID" || true
 
 module load cuda/11.8.0-gcc-13.2.0-oz34nbl
 
 if [[ ! -f "$VENV_PATH/bin/activate" ]]; then
     echo "Missing virtual environment at $VENV_PATH"
-    echo "Run with BOOTSTRAP_VENV=1 ./run_supercomputer.sh to create it automatically."
     exit 1
 fi
 
 source "$VENV_PATH/bin/activate"
-torchrun --nproc_per_node=4 --master_port=29500 src/main.py
+
+python "$WORKDIR/server/hpc_server.py"
 
 echo "End time: $(date)"
