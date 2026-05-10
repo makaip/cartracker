@@ -4,3 +4,11 @@ remote:
   dir: /mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack
   host: 131.91.163.212
   user: jpindell2022
+server:
+  ws_host: "0.0.0.0"
+  ws_port: 8765
+  similarity_threshold: 0.75
+  frame_skip: 5
+  num_gpus: 4
+  frame_queue_maxsize: 64
+  result_queue_maxsize: 256

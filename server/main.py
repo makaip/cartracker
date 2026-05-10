@@ -2,6 +2,9 @@ import json
 import os
 import uuid as uuid_lib
 import shutil
+import asyncio
+import yaml
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -13,23 +16,51 @@ import queue
 from retrieve import generate_frames
 import database
 
-import yaml
-
 # command to forward port for WebSocket connection to HPC cluster
 # ssh -L 8765:compute-node-name:8765 user@cluster.edu
 
-FRAME_QUEUE_MAXSIZE = 64
-RESULT_QUEUE_MAXSIZE = 256
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)['server']
+
+FRAME_QUEUE_MAXSIZE = config['frame_queue_maxsize']
+RESULT_QUEUE_MAXSIZE = config['result_queue_maxsize']
+WS_HOST = config['ws_host']
+WS_PORT = config['ws_port']
+NUM_GPUS = config['num_gpus']
 
 frame_queue = mp.Queue(maxsize=FRAME_QUEUE_MAXSIZE)     # in: (camera_uuid, frame_array)
 result_queue = mp.Queue(maxsize=RESULT_QUEUE_MAXSIZE)   # out: match payload dict
 
 # ----
 
-WS_HOST         = "0.0.0.0"
-WS_PORT         = 8765
+CONNECTED_CLIENTS: set[WebSocket] = set()
 
-app = FastAPI()
+async def result_broadcaster():
+    while True:
+        try:
+            if CONNECTED_CLIENTS:
+                payload_str = json.dumps(result_queue.get_nowait())
+                for client in list(CONNECTED_CLIENTS):
+                    try:
+                        await client.send_text(payload_str)
+                    except Exception as e:
+                        print(f"Error sending to client: {e}")
+        except queue.Empty:
+            await asyncio.sleep(0.01)
+        except Exception as e:
+            print(f"Broadcaster error: {e}")
+            await asyncio.sleep(1)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup
+    broadcaster_task = asyncio.create_task(result_broadcaster())
+    yield
+
+    # shutdown
+    broadcaster_task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 UPLOAD_FOLDER = 'uploads/'
 
 database.init_db()
@@ -48,15 +79,19 @@ async def index() -> str:
 @app.websocket('/ws')
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    CONNECTED_CLIENTS.add(websocket)
+    print(f"WebSocket client connected. Total clients: {len(CONNECTED_CLIENTS)}")
     try:
         while True:
             data = await websocket.receive_text()
             print(f"Received message: {data}")
 
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        print(f"WebSocket client disconnected: {e}")
     finally:
-        await websocket.close()
+        if websocket in CONNECTED_CLIENTS:
+            CONNECTED_CLIENTS.remove(websocket)
+        print(f"WebSocket client removed. Total clients: {len(CONNECTED_CLIENTS)}")
 
 @app.get('/video_feed/{uuid}')
 async def video_feed(uuid: str):
@@ -97,5 +132,5 @@ async def delete_vehicle(uuid: str = Form(...)):
     return {"status": "deleted", "uuid": vehicle_uuid}
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    uvicorn.run(app, host='0.0.0.0', port=port, reload=True)
+    port = int(os.environ.get("PORT", WS_PORT))
+    uvicorn.run(app, host=WS_HOST, port=port, reload=True)

@@ -6,8 +6,14 @@ import numpy as np
 import av
 import cv2
 import multiprocessing as mp
+import yaml
 
 from detector import gpu_worker
+
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)['server']
+    
+FRAME_SKIP = config['frame_skip']
 
 async def generate_frames(
         camera_uuid: str,
@@ -20,7 +26,7 @@ async def generate_frames(
     
     while not stop_event.is_set():
         try:
-            async for frame_bytes in frame_generator(url, camera_uuid, frame_queue):
+            async for frame_bytes in frame_generator(url, FRAME_SKIP, camera_uuid, frame_queue):
                 yield frame_bytes
                 if stop_event.is_set():
                     break

@@ -5,8 +5,14 @@ from pathlib import Path
 import cv2
 import multiprocessing as mp
 import asyncio
+import yaml
 
 import numpy as np
+
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)['server']
+    
+SIMILARITY_THRESHOLD = config['similarity_threshold']
 from ultralytics import YOLO
 
 import torch
@@ -170,9 +176,11 @@ async def gpu_worker(
             for j, vehicle_target in enumerate(target_matrix):
                 # match_embedding expects 2D tensors ??? TODO revisit
                 similarity = await match_embedding(embedding, target_matrix)
-                matched_idx = similarity.argmax().item()
-                matched_uuid = target_uuids[matched_idx]
-                sim_matrix.append((matched_uuid, similarity.max().item()))
+                max_sim = similarity.max().item()
+                if max_sim >= SIMILARITY_THRESHOLD:
+                    matched_idx = similarity.argmax().item()
+                    matched_uuid = target_uuids[matched_idx]
+                    sim_matrix.append((matched_uuid, max_sim))
             
             if sim_matrix:
                 frame_detections.append({
