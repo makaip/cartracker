@@ -7,16 +7,24 @@ from fastapi import FastAPI, WebSocket, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 
+import multiprocessing as mp
+import queue
+
 from retrieve import generate_frames
 import database
 
-# import multiprocessing as mp
-# import threading
-# import yaml
+import yaml
 
 # command to forward port for WebSocket connection to HPC cluster
 # ssh -L 8765:compute-node-name:8765 user@cluster.edu
 
+FRAME_QUEUE_MAXSIZE = 64
+RESULT_QUEUE_MAXSIZE = 256
+
+frame_queue = mp.Queue(maxsize=FRAME_QUEUE_MAXSIZE)     # in: (camera_uuid, frame_array)
+result_queue = mp.Queue(maxsize=RESULT_QUEUE_MAXSIZE)   # out: match payload dict
+
+# ----
 
 WS_HOST         = "0.0.0.0"
 WS_PORT         = 8765

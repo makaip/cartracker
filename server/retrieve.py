@@ -20,21 +20,26 @@ async def generate_frames(
     
     while not stop_event.is_set():
         try:
-            yield (b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + frame_generator(url) + b'\r\n')
-
+            async for frame_bytes in frame_generator(url, camera_uuid, frame_queue):
+                yield frame_bytes
+                if stop_event.is_set():
+                    break
         except Exception as e:
             print(f"An error occurred during streaming: {e}")
             break
     
     print(f"Stopping frame generation for camera {camera_uuid}")
 
-async def frame_generator(url: str):
+async def frame_generator(url: str,                 # URL of the camera's HLS stream
+                          k_skip: int,              # process every k frames for detection
+                          camera_uuid: str,         # unique identifier for the camera
+                          frame_queue: mp.Queue):   # queue to send frames to GPU worker
     """generate continuous JPEG frames from the cameras HLS stream"""
 
     container = av.open(url)
     last_frame_time = None
     last_real_time = None
+    frame_count = 0
 
     for frame in container.decode(video=0):
         if last_frame_time is not None and frame.time is not None:
@@ -50,11 +55,17 @@ async def frame_generator(url: str):
             last_frame_time = frame.time
             last_real_time = time.time()
 
-        # revisit - might not be optimal
-        img = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
-        buf = BytesIO()
-        img.save(buf, format='JPEG', quality=85)
-        frame_bytes = buf.getvalue()
+        frame_array = frame.to_ndarray(format='bgr24')
+        
+        frame_count += 1
+        if frame_count % k_skip == 0:
+            try:
+                frame_queue.put_nowait((camera_uuid, frame_array))
+            except Exception as e:
+                pass # queue is full
+
+        _, img_encoded = cv2.imencode('.jpg', frame_array, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        frame_bytes = img_encoded.tobytes()
         
         yield (b'--frame\r\n'
             b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
