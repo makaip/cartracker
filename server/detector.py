@@ -4,15 +4,11 @@ import sqlite3
 from pathlib import Path
 import cv2
 import multiprocessing as mp
-import asyncio
+from multiprocessing.synchronize import Event as MpEvent
 import yaml
-
+import time
 import numpy as np
 
-with open('config.yaml', 'r') as f:
-    config = yaml.safe_load(f)['server']
-    
-SIMILARITY_THRESHOLD = config['similarity_threshold']
 from ultralytics import YOLO
 
 import torch
@@ -20,6 +16,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
+
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)['server']
 
 print("Cuda is available:", torch.cuda.is_available())
 
@@ -52,7 +51,7 @@ def precalc_targets(device: torch.device,
                     classifier: EmbeddingNet
                     ) -> dict[str, torch.Tensor]:
 
-    base_dir = Path(__file__).resolve()
+    base_dir = Path(__file__).resolve().parent
     db_path = base_dir / "vehicles.db"
     uploads_dir = base_dir / "uploads"
     targets = {}
@@ -75,8 +74,9 @@ def precalc_targets(device: torch.device,
                     emb = classifier(img_tensor)
                 embs.append(emb)
         
-        mean_emb = torch.mean(torch.cat(embs, dim=0), dim=0)
-        targets[uuid] = mean_emb
+        if embs:
+            mean_emb = torch.mean(torch.cat(embs, dim=0), dim=0)
+            targets[uuid] = mean_emb
     
     return targets
 
@@ -102,12 +102,12 @@ def match_embedding(embedding: torch.Tensor,
     # since embeddings are L2 normalized, ||a|| = ||b|| = 1, so we can just do dot product
     return torch.mm(embedding, target_matrix.t()).squeeze(0)  # shape: (num_targets,)
 
-async def gpu_worker(
-        gpu_id: int,                    # gpu index for worker
-        frame_queue: mp.Queue,          # receive frames from main thread
-        result_queue: queue.Queue,      # send results back to main thread
-        stop_event: asyncio.Event,      # stop worker thread
-        update_event: asyncio.Event     # new vehicle added (update embeddings)
+def gpu_worker(
+        gpu_id: int,                # gpu index for worker
+        frame_queue: mp.Queue,      # receive frames from main thread
+        result_queue: queue.Queue,  # send results back to main thread
+        stop_event: MpEvent,        # stop worker thread
+        update_event: MpEvent       # new vehicle added (update embeddings)
     ) -> None:
     
     # setup worker - init
@@ -127,7 +127,7 @@ async def gpu_worker(
     target_matrix = torch.cat(list(targets.values()), dim=0) if targets else None
 
     # event loop - update
-    while not stop_event:
+    while not stop_event.is_set():
         if update_event.is_set():
             print(f"[GPU {gpu_id}] Updating target embeddings...")
             targets = precalc_targets(device, classifier)
@@ -173,14 +173,11 @@ async def gpu_worker(
 
             sim_matrix = []
             
-            for j, vehicle_target in enumerate(target_matrix):
-                # match_embedding expects 2D tensors ??? TODO revisit
-                similarity = match_embedding(embedding, target_matrix)
-                max_sim = similarity.max().item()
-                if max_sim >= SIMILARITY_THRESHOLD:
-                    matched_idx = similarity.argmax().item()
-                    matched_uuid = target_uuids[matched_idx]
-                    sim_matrix.append((matched_uuid, max_sim))
+            similarity = match_embedding(embedding, target_matrix)
+            if similarity is not None:
+                matched_idx = similarity.argmax().item()
+                matched_uuid = target_uuids[matched_idx]
+                sim_matrix.append((matched_uuid, similarity.max().item()))
             
             if sim_matrix:
                 frame_detections.append({
@@ -193,6 +190,7 @@ async def gpu_worker(
             try:
                 result_queue.put_nowait({
                     "camera_uuid": camera_uuid,
+                    "timestamp": time.time(),
                     "detections": frame_detections
                 })
             except queue.Full:

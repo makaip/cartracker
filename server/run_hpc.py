@@ -13,7 +13,6 @@ def load_config(config_path: Path):
         return yaml.safe_load(f)
 
 def run_cmd(cmd, shell=False, check=True, cwd=None):
-    cmd_strs = [str(c) for c in cmd] if isinstance(cmd, list) else cmd
     return subprocess.run(cmd, shell=shell, check=check, text=True, capture_output=True, cwd=cwd)
 
 def run_ssh(remote_uri, command, check=True):

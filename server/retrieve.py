@@ -14,39 +14,70 @@ with open('config.yaml', 'r') as f:
     
 FRAME_SKIP = config['frame_skip']
 
+async def process_camera_stream(camera_uuid: str, 
+                                frame_queue: mp.Queue) -> None:
+    """continuously push stream frames to the GPU worker queue."""
+    url = f"https://pbcvideostreams1.pbc.gov/memfs/{camera_uuid}.m3u8"
+
+    while True:
+        try:
+            container = await asyncio.to_thread(av.open, url)
+            frame_count = 0
+            iterator = container.decode(video=0)
+            
+            while True:
+                try:
+                    frame = await asyncio.to_thread(next, iterator)
+                except StopIteration:
+                    break
+                    
+                frame_count += 1
+                if frame_count % FRAME_SKIP == 0:
+                    frame_array = frame.to_ndarray(format='bgr24')
+                    try:
+                        frame_queue.put_nowait((camera_uuid, frame_array))
+                    except Exception:
+                        pass # queue is full
+
+                await asyncio.sleep(0.001)
+        except Exception as e:
+            print(f"Background stream error for {camera_uuid}: {e}")
+            await asyncio.sleep(5.0)
+
 async def generate_frames(
         camera_uuid: str,
-        frame_queue: mp.Queue,
         stop_event: asyncio.Event
     ):
-    """async entry point for generating frames from a camera stream"""
+    """async entry point for generating frames from a camera stream for HTTP video viewing"""
 
     url = f"https://pbcvideostreams1.pbc.gov/memfs/{camera_uuid}.m3u8"
     
     while not stop_event.is_set():
         try:
-            async for frame_bytes in frame_generator(url, FRAME_SKIP, camera_uuid, frame_queue):
+            async for frame_bytes in frame_generator(url):
                 yield frame_bytes
                 if stop_event.is_set():
                     break
         except Exception as e:
             print(f"An error occurred during streaming: {e}")
             break
-    
-    print(f"Stopping frame generation for camera {camera_uuid}")
+            
+    print(f"Stopping HTTP frame generation for camera {camera_uuid}")
 
-async def frame_generator(url: str,                 # URL of the camera's HLS stream
-                          k_skip: int,              # process every k frames for detection
-                          camera_uuid: str,         # unique identifier for the camera
-                          frame_queue: mp.Queue):   # queue to send frames to GPU worker
+async def frame_generator(url: str):
     """generate continuous JPEG frames from the cameras HLS stream"""
 
-    container = av.open(url)
+    container = await asyncio.to_thread(av.open, url)
     last_frame_time = None
     last_real_time = None
-    frame_count = 0
+    iterator = container.decode(video=0)
 
-    for frame in container.decode(video=0):
+    while True:
+        try:
+            frame = await asyncio.to_thread(next, iterator)
+        except StopIteration:
+            break
+            
         if last_frame_time is not None and frame.time is not None:
             frame_delay = float(frame.time - last_frame_time)
             real_elapsed = time.time() - last_real_time
@@ -61,16 +92,7 @@ async def frame_generator(url: str,                 # URL of the camera's HLS st
             last_real_time = time.time()
 
         frame_array = frame.to_ndarray(format='bgr24')
-        
-        frame_count += 1
-        if frame_count % k_skip == 0:
-            try:
-                frame_queue.put_nowait((camera_uuid, frame_array))
-            except Exception as e:
-                pass # queue is full
-
         _, img_encoded = cv2.imencode('.jpg', frame_array, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        frame_bytes = img_encoded.tobytes()
         
         yield (b'--frame\r\n'
-            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            b'Content-Type: image/jpeg\r\n\r\n' + img_encoded.tobytes() + b'\r\n')

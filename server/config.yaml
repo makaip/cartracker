@@ -7,7 +7,6 @@ remote:
 server:
   ws_host: "0.0.0.0"
   ws_port: 8765
-  similarity_threshold: 0.75
   frame_skip: 5
   num_gpus: 4
   frame_queue_maxsize: 64

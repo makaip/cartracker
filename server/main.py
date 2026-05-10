@@ -13,7 +13,7 @@ import uvicorn
 import multiprocessing as mp
 import queue
 
-from retrieve import generate_frames
+from retrieve import generate_frames, process_camera_stream
 import database
 
 # command to forward port for WebSocket connection to HPC cluster
@@ -52,9 +52,8 @@ async def result_broadcaster():
             await asyncio.sleep(1)
 
 def run_worker(*args):
-    import asyncio
     from detector import gpu_worker
-    asyncio.run(gpu_worker(*args))
+    gpu_worker(*args)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,9 +75,19 @@ async def lifespan(app: FastAPI):
         
     app.state.update_event = update_event
 
+    camera_tasks = []
+    cameras = load_cameras()
+    camera_uuids = list(cameras.keys()) if isinstance(cameras, dict) else cameras
+    print(f"Starting background streams for {len(camera_uuids)} cameras...")
+    for cam_uuid in camera_uuids:
+        task = asyncio.create_task(process_camera_stream(cam_uuid, frame_queue))
+        camera_tasks.append(task)
+
     yield
 
     # shutdown
+    for task in camera_tasks:
+        task.cancel()
     broadcaster_task.cancel()
     stop_event.set()
     for _ in workers:
@@ -125,7 +134,7 @@ async def video_feed(uuid: str):
         raise HTTPException(status_code=400, detail="No UUID provided")
     
     stop_event = asyncio.Event()
-    return StreamingResponse(generate_frames(uuid, frame_queue, stop_event), media_type='multipart/x-mixed-replace; boundary=frame')
+    return StreamingResponse(generate_frames(uuid, stop_event), media_type='multipart/x-mixed-replace; boundary=frame')
 
 @app.post('/add_vehicle')
 async def add_vehicle(pictures: list[UploadFile] = File(...)):
@@ -143,6 +152,8 @@ async def add_vehicle(pictures: list[UploadFile] = File(...)):
                 shutil.copyfileobj(f.file, buffer)
             
     database.add_vehicle(vehicle_uuid)
+    app.state.update_event.set() # update embeddings in GPU workers
+
     return {"uuid": vehicle_uuid}
     
 @app.post('/delete_vehicle')
@@ -156,6 +167,8 @@ async def delete_vehicle(uuid: str = Form(...)):
     upload_path = os.path.join(UPLOAD_FOLDER, vehicle_uuid)
     if os.path.exists(upload_path):
         shutil.rmtree(upload_path)
+    
+    app.state.update_event.set() # update embeddings in GPU workers
     return {"status": "deleted", "uuid": vehicle_uuid}
 
 if __name__ == '__main__':
