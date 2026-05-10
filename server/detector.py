@@ -74,7 +74,7 @@ def precalc_targets(device: torch.device,
     
     return targets
 
-async def classify_car(frame_array: np.ndarray,
+def classify_car(frame_array: np.ndarray,
                        device: torch.device, 
                        classifier: EmbeddingNet
                        ) -> np.ndarray:
@@ -86,7 +86,7 @@ async def classify_car(frame_array: np.ndarray,
     
     return embedding
 
-async def match_embedding(embedding: torch.Tensor, 
+def match_embedding(embedding: torch.Tensor, 
                           target_matrix: torch.Tensor
                           ) -> list[str]:
     if target_matrix is None:
@@ -98,10 +98,10 @@ async def match_embedding(embedding: torch.Tensor,
 
 async def gpu_worker(
         gpu_id: int,                    # gpu index for worker
-        frame_queue: mp.Queue,       # receive frames from main thread
+        frame_queue: mp.Queue,          # receive frames from main thread
         result_queue: queue.Queue,      # send results back to main thread
-        stop_event: asyncio.Event,    # stop worker thread
-        update_event: asyncio.Event   # new vehicle added (update embeddings)
+        stop_event: asyncio.Event,      # stop worker thread
+        update_event: asyncio.Event     # new vehicle added (update embeddings)
     ) -> None:
     
     # setup worker - init
@@ -142,38 +142,50 @@ async def gpu_worker(
         
         # YOLOv8 classes: 2=car, 3=motorcycle, 5=bus, 7=truck
         yolo_results = detector(frame_array, classes=[2, 3, 5, 7], verbose=False)
-        bounding_boxes = [box for box in yolo_results[0].boxes if box.id is None]
-        # ^ extract bounding boxes and assign an ID to each box
 
-        for result in yolo_results[0].boxes:
+        frame_detections = []
+
+        for i, result in enumerate(yolo_results[0].boxes):
             x1, y1, x2, y2 = result.xyxy[0].int().tolist()
+            
+            # handle out of bounds bounding boxes securely
+            if y2 <= y1 or x2 <= x1:
+                continue
+                
             car_image = frame_array[y1:y2, x1:x2]
-            yolo_results[0].embedding = await classify_car(car_image)
-        
-        """
-        simmilarity matrix format
-        format:
-            target_uuid: {
-                vehicle_id: <similarity_score>,
+            embedding = classify_car(car_image, device, classifier)
+
+            """
+            simmilarity matrix format
+            format:
+                target_uuid: {
+                    vehicle_id: <similarity_score>,
+                    ...
+                }
                 ...
-            }
-            ...
-        """
+            """
 
-        sim_matrix = []
-
-        for vehicle in target_matrix:
-            similarity = await match_embedding(yolo_results[0].embedding, vehicle, target_matrix)
-            if similarity is not None and similarity.max() > 0.75:  # threshold for match
-                matched_uuid = target_uuids[similarity.argmax()]
+            sim_matrix = []
+            
+            for j, vehicle_target in enumerate(target_matrix):
+                # match_embedding expects 2D tensors ??? TODO revisit
+                similarity = await match_embedding(embedding, target_matrix)
+                matched_idx = similarity.argmax().item()
+                matched_uuid = target_uuids[matched_idx]
                 sim_matrix.append((matched_uuid, similarity.max().item()))
+            
+            if sim_matrix:
+                frame_detections.append({
+                    "vehicle_id": i,
+                    "box": [x1, y1, x2, y2],
+                    "matches": sim_matrix
+                })
         
-        # put results in queue for main thread
-        try:
-            result_queue.put_nowait({
-                "camera_uuid": camera_uuid,
-                "bounding_boxes": bounding_boxes,
-                "similarity_matrix": sim_matrix
-            })
-        except queue.Full:
-            pass
+        if frame_detections:
+            try:
+                result_queue.put_nowait({
+                    "camera_uuid": camera_uuid,
+                    "detections": frame_detections
+                })
+            except queue.Full:
+                pass
