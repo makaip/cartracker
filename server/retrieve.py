@@ -8,7 +8,6 @@ import cv2
 import multiprocessing as mp
 import yaml
 
-from detector import gpu_worker
 
 with open('config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']

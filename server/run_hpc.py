@@ -185,7 +185,15 @@ def main():
     print(f"  Slurm Job ID : {job_id}")
     print(f"  stdout log   : {remote_results_dir}/slurm-{job_id}.out")
     print(f"  stderr log   : {remote_results_dir}/slurm-{job_id}.err")
-
+    print("press q to cancel job")
+    c = False
+    while c is False:
+        c = input()
+        if c.lower() == "q":
+            print(f"Cancelling job {job_id}...")
+            run_ssh(remote_uri, f"scancel {job_id}")
+            print("Cancelled.")
+            break
 
 if __name__ == "__main__":
     main()

@@ -51,14 +51,40 @@ async def result_broadcaster():
             print(f"Broadcaster error: {e}")
             await asyncio.sleep(1)
 
+def run_worker(*args):
+    import asyncio
+    from detector import gpu_worker
+    asyncio.run(gpu_worker(*args))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # startup
     broadcaster_task = asyncio.create_task(result_broadcaster())
+    
+    stop_event = mp.Event()
+    update_event = mp.Event()
+    
+    workers = []
+    import torch
+    num_gpus_available = torch.cuda.device_count() if torch.cuda.is_available() else 1
+    num_workers = min(NUM_GPUS, num_gpus_available)
+    print(f"Starting {num_workers} GPU workers...")
+    for i in range(num_workers):
+        p = mp.Process(target=run_worker, args=(i, frame_queue, result_queue, stop_event, update_event))
+        p.start()
+        workers.append(p)
+        
+    app.state.update_event = update_event
+
     yield
 
     # shutdown
     broadcaster_task.cancel()
+    stop_event.set()
+    for _ in workers:
+        frame_queue.put(None)
+    for p in workers:
+        p.join()
 
 app = FastAPI(lifespan=lifespan)
 UPLOAD_FOLDER = 'uploads/'
@@ -98,7 +124,8 @@ async def video_feed(uuid: str):
     if not uuid:
         raise HTTPException(status_code=400, detail="No UUID provided")
     
-    return StreamingResponse(generate_frames(uuid), media_type='multipart/x-mixed-replace; boundary=frame')
+    stop_event = asyncio.Event()
+    return StreamingResponse(generate_frames(uuid, frame_queue, stop_event), media_type='multipart/x-mixed-replace; boundary=frame')
 
 @app.post('/add_vehicle')
 async def add_vehicle(pictures: list[UploadFile] = File(...)):

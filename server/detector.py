@@ -94,7 +94,7 @@ def classify_car(frame_array: np.ndarray,
 
 def match_embedding(embedding: torch.Tensor, 
                           target_matrix: torch.Tensor
-                          ) -> list[str]:
+                          ) -> torch.Tensor:
     if target_matrix is None:
         return None
     
@@ -175,7 +175,7 @@ async def gpu_worker(
             
             for j, vehicle_target in enumerate(target_matrix):
                 # match_embedding expects 2D tensors ??? TODO revisit
-                similarity = await match_embedding(embedding, target_matrix)
+                similarity = match_embedding(embedding, target_matrix)
                 max_sim = similarity.max().item()
                 if max_sim >= SIMILARITY_THRESHOLD:
                     matched_idx = similarity.argmax().item()
