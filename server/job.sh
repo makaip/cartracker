@@ -36,6 +36,6 @@ fi
 
 source "$VENV_PATH/bin/activate"
 
-python "$WORKDIR/server/hpc_server.py"
+python "$WORKDIR/server/main.py"
 
 echo "End time: $(date)"

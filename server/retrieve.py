@@ -7,9 +7,12 @@ import av
 import cv2
 import multiprocessing as mp
 import yaml
+from pathlib import Path
 
 
-with open('config.yaml', 'r') as f:
+SERVER_DIR = Path(__file__).resolve().parent
+
+with open(SERVER_DIR / 'config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']
     
 FRAME_SKIP = config['frame_skip']

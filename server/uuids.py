@@ -2,6 +2,9 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
+from pathlib import Path
+
+SERVER_DIR = Path(__file__).resolve().parent
 
 url = "https://discover.pbc.gov/iss/Pages/LIVE-Traffic-Cams.aspx#"
 
@@ -32,5 +35,5 @@ for link in links:
             camera_data[uuid] = text
 
 # to json
-with open('traffic_cameras.json', 'w') as f:
+with open(SERVER_DIR / 'traffic_cameras.json', 'w') as f:
     json.dump(camera_data, f, indent=4)

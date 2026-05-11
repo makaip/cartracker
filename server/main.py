@@ -5,6 +5,7 @@ import shutil
 import asyncio
 import yaml
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, UploadFile, File, Form, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -16,10 +17,12 @@ import queue
 from retrieve import generate_frames, process_camera_stream
 import database
 
+SERVER_DIR = Path(__file__).resolve().parent
+
 # command to forward port for WebSocket connection to HPC cluster
 # ssh -L 8765:compute-node-name:8765 user@cluster.edu
 
-with open('config.yaml', 'r') as f:
+with open(SERVER_DIR / 'config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']
 
 FRAME_QUEUE_MAXSIZE = config['frame_queue_maxsize']
@@ -96,16 +99,24 @@ async def lifespan(app: FastAPI):
         p.join()
 
 app = FastAPI(lifespan=lifespan)
-UPLOAD_FOLDER = 'uploads/'
+UPLOAD_FOLDER = SERVER_DIR / 'uploads'
 
 database.init_db()
 
 def load_cameras() -> dict:
     try:
-        with open('traffic_cameras.json', 'r') as f:
+        with open(SERVER_DIR / 'traffic_cameras.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
+
+@app.get('/cameras')
+async def get_cameras():
+    return load_cameras()
+
+@app.get('/vehicles')
+async def list_vehicles():
+    return database.get_vehicles()
 
 @app.get('/')
 async def index() -> str:
@@ -142,13 +153,13 @@ async def add_vehicle(pictures: list[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail="No pictures uploaded")
     
     vehicle_uuid = str(uuid_lib.uuid4())
-    upload_path = os.path.join(UPLOAD_FOLDER, vehicle_uuid)
-    os.makedirs(upload_path, exist_ok=True)
+    upload_path = UPLOAD_FOLDER / vehicle_uuid
+    upload_path.mkdir(parents=True, exist_ok=True)
     
     for f in pictures:
         if f.filename:
             filename = os.path.basename(f.filename)
-            with open(os.path.join(upload_path, filename), 'wb') as buffer:
+            with open(upload_path / filename, 'wb') as buffer:
                 shutil.copyfileobj(f.file, buffer)
             
     database.add_vehicle(vehicle_uuid)
@@ -164,8 +175,8 @@ async def delete_vehicle(uuid: str = Form(...)):
         
     database.delete_vehicle(vehicle_uuid)
     
-    upload_path = os.path.join(UPLOAD_FOLDER, vehicle_uuid)
-    if os.path.exists(upload_path):
+    upload_path = UPLOAD_FOLDER / vehicle_uuid
+    if upload_path.exists():
         shutil.rmtree(upload_path)
     
     app.state.update_event.set() # update embeddings in GPU workers

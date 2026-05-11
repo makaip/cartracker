@@ -17,7 +17,9 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
 
-with open('config.yaml', 'r') as f:
+SERVER_DIR = Path(__file__).resolve().parent
+
+with open(SERVER_DIR / 'config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']
 
 print("Cuda is available:", torch.cuda.is_available())
@@ -112,13 +114,11 @@ def gpu_worker(
     
     # setup worker - init
     device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
-    base_dir = Path(__file__).resolve()
-
-    detector = YOLO('yolov8s.pt')
+    detector = YOLO(str(SERVER_DIR / 'yolov8s.pt'))
     detector.to(device)  # force GPU
 
     classifier = EmbeddingNet()
-    classifier.load_state_dict(torch.load('veri_emb_rn50.pt', map_location=device))
+    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_emb_rn50.pt', map_location=device))
     classifier.to(device)
     classifier.eval()
 
