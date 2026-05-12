@@ -8,7 +8,7 @@ export function useVehicles() {
 
   const vehicleItems = computed(() => {
     return vehicles.value.map(v => ({
-      label: v.uuid.split('-')[0], // Short UUID
+      label: (v.name && v.name.length > 0) ? v.name : v.uuid.split('-')[0],
       description: v.uuid,
       value: v.uuid,
       icon: 'i-lucide-car'
@@ -26,14 +26,18 @@ export function useVehicles() {
     }
   }
 
-  const uploadVehicleFiles = async (files: FileList | null | undefined) => {
+  const uploadVehicleFiles = async (files: FileList | null | undefined, name?: string | null) => {
     if (!files || files.length === 0) return false
 
     isUploading.value = true
     const formData = new FormData()
     for (let i = 0; i < files.length; i++) {
-      formData.append('pictures', files[i])
+      const file = files.item(i)
+      if (file) {
+        formData.append('pictures', file)
+      }
     }
+    if (name) formData.append('name', name)
 
     try {
       const res = await fetch('http://localhost:8765/add_vehicle', {

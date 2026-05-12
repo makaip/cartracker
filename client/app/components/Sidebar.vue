@@ -7,6 +7,7 @@
         <UButton label="Add Vehicle" color="primary" block icon="i-lucide-plus" @click="isModalOpen = true" />
         <template #body>
           <div class="space-y-4">
+            <input v-model="vehicleName" type="text" placeholder="Vehicle name (optional)" class="block w-full px-3 py-2 border rounded" />
             <input type="file" multiple ref="fileInput" accept="image/*" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100" />
             
             <div class="flex justify-end gap-2">
@@ -62,6 +63,7 @@ const {
 
 const isModalOpen = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const vehicleName = ref('')
 const searchTerm = ref('')
 
 onMounted(() => {
@@ -69,7 +71,7 @@ onMounted(() => {
 })
 
 const uploadVehicle = async () => {
-  const success = await uploadVehicleFiles(fileInput.value?.files)
+  const success = await uploadVehicleFiles(fileInput.value?.files, vehicleName.value)
   if (success) {
     isModalOpen.value = false
     if (fileInput.value) fileInput.value.value = ''

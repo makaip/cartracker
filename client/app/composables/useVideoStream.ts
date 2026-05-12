@@ -1,20 +1,23 @@
 import { ref, computed } from 'vue'
 
 const AUTO_THRESHOLD = 0.85
+const STATUS_POLL_INTERVAL = 2000 // Poll every 2 seconds
 
 export function useVideoStream() {
   const trackedVehicle = useState<string | null>('trackedVehicle', () => null)
 
   const cameras = ref<Record<string, string>>({})
-  const cameraOptions = ref<{ value: string; label: string }[]>([])
+  const cameraOptions = ref<{ value: string; label: string; disabled?: boolean }[]>([])
   const selectedCamera = ref('')
   const isAutoMode = ref(false)
 
   const isConnected = ref(false)
   let ws: WebSocket | null = null
+  let statusPollingInterval: NodeJS.Timeout | null = null
 
   // State to hold latest detections per camera UUID
   const cameraDetections = ref<Record<string, any[]>>({})
+  const cameraStatus = ref<Record<string, boolean>>({})  // camera_uuid -> is_online
 
   // Get detections for currently selected camera
   const currentDetections = computed(() => {
@@ -27,17 +30,44 @@ export function useVideoStream() {
       const res = await fetch('http://localhost:8765/cameras')
       if (res.ok) {
         cameras.value = await res.json()
-        cameraOptions.value = Object.entries(cameras.value).map(([id, name]) => ({
-          value: id,
-          label: name as string
-        }))
-        if (cameraOptions.value.length > 0) {
-          selectedCamera.value = cameraOptions.value[0].value
+        updateCameraOptions()
+        const firstOnlineCamera = cameraOptions.value.find(cam => !cam.disabled)
+        if (firstOnlineCamera) {
+          selectedCamera.value = firstOnlineCamera.value
         }
       }
     } catch (err) {
       console.error('Failed to fetch cameras:', err)
     }
+  }
+
+  const fetchCameraStatus = async () => {
+    try {
+      const res = await fetch('http://localhost:8765/camera_status')
+      if (res.ok) {
+        cameraStatus.value = await res.json()
+        updateCameraOptions()
+
+        /*
+        if (selectedCamera.value && !cameraStatus.value[selectedCamera.value]) {
+          const firstOnlineCamera = cameraOptions.value.find(cam => !cam.disabled)
+          if (firstOnlineCamera) {
+            selectedCamera.value = firstOnlineCamera.value
+          }
+        }
+        */
+      }
+    } catch (err) {
+      console.error('Failed to fetch camera status:', err)
+    }
+  }
+
+  const updateCameraOptions = () => {
+    cameraOptions.value = Object.entries(cameras.value).map(([id, name]) => ({
+      value: id,
+      label: name as string,
+      disabled: cameraStatus.value[id] === false  // Disable if explicitly offline
+    }))
   }
 
   const connectWs = () => {
@@ -99,6 +129,15 @@ export function useVideoStream() {
     if (ws) ws.close()
   }
 
+  const startStatusPolling = () => {
+    fetchCameraStatus() // Initial fetch
+    statusPollingInterval = setInterval(fetchCameraStatus, STATUS_POLL_INTERVAL)
+  }
+
+  const stopStatusPolling = () => {
+    if (statusPollingInterval) clearInterval(statusPollingInterval)
+  }
+
   return {
     trackedVehicle,
     cameras,
@@ -107,7 +146,11 @@ export function useVideoStream() {
     isAutoMode,
     isConnected,
     currentDetections,
+    cameraStatus,
     fetchCameras,
+    fetchCameraStatus,
+    startStatusPolling,
+    stopStatusPolling,
     connectWs,
     disconnectWs
   }
