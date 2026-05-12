@@ -13,6 +13,9 @@ set -Eeuo pipefail
 WORKDIR="${RUN_WORKDIR:-${SLURM_SUBMIT_DIR:-/mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack}}"
 VENV_PATH="${VENV_DIR:-$WORKDIR/.venv}"
 COMPUTE_NODE="$(hostname --fqdn 2>/dev/null || hostname)"
+export YOLO_CONFIG_DIR="${YOLO_CONFIG_DIR:-$WORKDIR/.cache/ultralytics}"
+export TORCH_HOME="${TORCH_HOME:-$WORKDIR/.cache/torch}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$WORKDIR/.cache}"
 
 cd "$WORKDIR"
 
@@ -23,6 +26,9 @@ echo " Slurm Job ID  : $SLURM_JOB_ID"
 echo " Compute node  : $COMPUTE_NODE"
 echo " Working dir   : $WORKDIR"
 echo " Venv          : $VENV_PATH"
+echo " YOLO config   : $YOLO_CONFIG_DIR"
+echo " TORCH home    : $TORCH_HOME"
+echo " XDG cache     : $XDG_CACHE_HOME"
 echo " Start time    : $(date --iso-8601=seconds)"
 
 scontrol show job "$SLURM_JOB_ID" || true

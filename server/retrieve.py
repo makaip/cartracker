@@ -17,21 +17,29 @@ with open(SERVER_DIR / 'config.yaml', 'r') as f:
     
 FRAME_SKIP = config['frame_skip']
 
+
+def _next_frame(iterator):
+    try:
+        return next(iterator)
+    except StopIteration:
+        return None
+
 async def process_camera_stream(camera_uuid: str, 
-                                frame_queue: mp.Queue) -> None:
+                                frame_queue: mp.Queue,
+                                camera_status: dict) -> None:
     """continuously push stream frames to the GPU worker queue."""
     url = f"https://pbcvideostreams1.pbc.gov/memfs/{camera_uuid}.m3u8"
 
     while True:
         try:
             container = await asyncio.to_thread(av.open, url)
+            camera_status[camera_uuid] = True  # Mark as online
             frame_count = 0
             iterator = container.decode(video=0)
             
             while True:
-                try:
-                    frame = await asyncio.to_thread(next, iterator)
-                except StopIteration:
+                frame = await asyncio.to_thread(_next_frame, iterator)
+                if frame is None:
                     break
                     
                 frame_count += 1
@@ -44,7 +52,12 @@ async def process_camera_stream(camera_uuid: str,
 
                 await asyncio.sleep(0.001)
         except Exception as e:
-            print(f"Background stream error for {camera_uuid}: {e}")
+            error_str = str(e)
+            if '404' in error_str or 'Not Found' in error_str:
+                camera_status[camera_uuid] = False  # mark offline
+                print(f"Background stream error for {camera_uuid}: {e}")
+            else:
+                print(f"Background stream error for {camera_uuid}: {e}")
             await asyncio.sleep(5.0)
 
 async def generate_frames(
@@ -76,9 +89,8 @@ async def frame_generator(url: str):
     iterator = container.decode(video=0)
 
     while True:
-        try:
-            frame = await asyncio.to_thread(next, iterator)
-        except StopIteration:
+        frame = await asyncio.to_thread(_next_frame, iterator)
+        if frame is None:
             break
             
         if last_frame_time is not None and frame.time is not None:

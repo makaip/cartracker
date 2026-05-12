@@ -11,19 +11,26 @@ def get_db_connection():
 
 def init_db():
     conn = get_db_connection()
+
     conn.execute('''
         CREATE TABLE IF NOT EXISTS vehicles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             uuid TEXT UNIQUE NOT NULL
         )
     ''')
+
+    cur = conn.execute("PRAGMA table_info(vehicles)")
+    cols = [r['name'] for r in cur.fetchall()]
+    if 'name' not in cols:
+        conn.execute('ALTER TABLE vehicles ADD COLUMN name TEXT')
+
     conn.commit()
     conn.close()
 
-def add_vehicle(uuid: str):
+def add_vehicle(uuid: str, name: str | None = None):
     conn = get_db_connection()
     try:
-        conn.execute('INSERT INTO vehicles (uuid) VALUES (?)', (uuid,))
+        conn.execute('INSERT INTO vehicles (uuid, name) VALUES (?, ?)', (uuid, name))
         conn.commit()
     except sqlite3.IntegrityError:
         pass

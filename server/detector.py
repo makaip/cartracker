@@ -9,6 +9,17 @@ import yaml
 import time
 import numpy as np
 
+
+SERVER_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SERVER_DIR.parent
+YOLO_CONFIG_DIR = PROJECT_DIR / '.cache' / 'ultralytics'
+TORCH_HOME = PROJECT_DIR / '.cache' / 'torch'
+XDG_CACHE_HOME = PROJECT_DIR / '.cache'
+
+os.environ.setdefault('YOLO_CONFIG_DIR', str(YOLO_CONFIG_DIR))
+os.environ.setdefault('TORCH_HOME', str(TORCH_HOME))
+os.environ.setdefault('XDG_CACHE_HOME', str(XDG_CACHE_HOME))
+
 from ultralytics import YOLO
 
 import torch
@@ -16,8 +27,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
-
-SERVER_DIR = Path(__file__).resolve().parent
 
 with open(SERVER_DIR / 'config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']
@@ -67,9 +76,11 @@ def precalc_targets(device: torch.device,
         vdir = uploads_dir / uuid
 
         embs = []
-        for ext in (".jpg", ".jpeg", ".png"):
+        for ext in ("jpg", "jpeg", "png"):
             for img_path in vdir.glob(f"*.{ext}"):
                 img = cv2.imread(str(img_path))
+                if img is None:
+                    continue
                 img_tensor = transform(np.array(img)).unsqueeze(0).to(device)
 
                 with torch.no_grad():
@@ -81,6 +92,13 @@ def precalc_targets(device: torch.device,
             targets[uuid] = mean_emb
     
     return targets
+
+
+def build_target_matrix(targets: dict[str, torch.Tensor]) -> torch.Tensor | None:
+    if not targets:
+        return None
+
+    return torch.stack(list(targets.values()), dim=0)
 
 def classify_car(frame_array: np.ndarray,
                        device: torch.device, 
@@ -124,7 +142,7 @@ def gpu_worker(
 
     targets = precalc_targets(device, classifier)
     target_uuids = list(targets.keys())
-    target_matrix = torch.cat(list(targets.values()), dim=0) if targets else None
+    target_matrix = build_target_matrix(targets)
 
     # event loop - update
     while not stop_event.is_set():
@@ -132,7 +150,7 @@ def gpu_worker(
             print(f"[GPU {gpu_id}] Updating target embeddings...")
             targets = precalc_targets(device, classifier)
             target_uuids = list(targets.keys())
-            target_matrix = torch.cat(list(targets.values()), dim=0) if targets else None
+            target_matrix = build_target_matrix(targets)
             update_event.clear()
         
         try:
@@ -144,10 +162,10 @@ def gpu_worker(
         except queue.Empty:
             continue
         if target_matrix is None:
-            continue
+            target_uuids = []
         
         # YOLOv8 classes: 2=car, 3=motorcycle, 5=bus, 7=truck
-        yolo_results = detector(frame_array, classes=[2, 3, 5, 7], verbose=False)
+        yolo_results = detector.predict(frame_array, device=device, classes=[2, 3, 5, 7], verbose=False)
 
         frame_detections = []
 
@@ -172,26 +190,24 @@ def gpu_worker(
             """
 
             sim_matrix = []
-            
+
             similarity = match_embedding(embedding, target_matrix)
-            if similarity is not None:
+            if similarity is not None and len(target_uuids) > 0:
                 matched_idx = similarity.argmax().item()
                 matched_uuid = target_uuids[matched_idx]
                 sim_matrix.append((matched_uuid, similarity.max().item()))
-            
-            if sim_matrix:
-                frame_detections.append({
-                    "vehicle_id": i,
-                    "box": [x1, y1, x2, y2],
-                    "matches": sim_matrix
-                })
-        
-        if frame_detections:
-            try:
-                result_queue.put_nowait({
-                    "camera_uuid": camera_uuid,
-                    "timestamp": time.time(),
-                    "detections": frame_detections
-                })
-            except queue.Full:
-                pass
+
+            frame_detections.append({
+                "vehicle_id": i,
+                "box": [x1, y1, x2, y2],
+                "matches": sim_matrix
+            })
+
+        try:
+            result_queue.put_nowait({
+                "camera_uuid": camera_uuid,
+                "timestamp": time.time(),
+                "detections": frame_detections
+            })
+        except queue.Full:
+            pass
