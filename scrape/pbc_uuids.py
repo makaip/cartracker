@@ -35,5 +35,5 @@ for link in links:
             camera_data[uuid] = text
 
 # to json
-with open(SERVER_DIR / 'traffic_cameras.json', 'w') as f:
+with open('pb_traffic_cameras.json', 'w') as f:
     json.dump(camera_data, f, indent=4)

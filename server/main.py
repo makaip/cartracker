@@ -126,7 +126,7 @@ database.init_db()
 
 def load_cameras() -> dict:
     try:
-        with open(SERVER_DIR / 'traffic_cameras.json', 'r') as f:
+        with open(SERVER_DIR / 'tc_pbc.json', 'r') as f:
             return json.load(f)
     except FileNotFoundError:
         return {}
