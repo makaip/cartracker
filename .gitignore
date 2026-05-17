@@ -1,6 +1,7 @@
 *.pt
 __pycache__
 datasets/
+/test/
 .env
 results/
 .venv/
