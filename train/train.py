@@ -1,8 +1,40 @@
+"""
+attempt at implementing: https://arxiv.org/pdf/2110.07933v2
+original code at: https://github.com/adhirajghosh/RPTM_reid
+
+
+triplet mining: https://omoindrot.github.io/triplet-loss#triplet-mining
+
+240x240 provided highest rank 1 perf.
+
+- Instance-Batch Normalization (IBN)
+    - in the feature embedding & extraction stage
+    - TODO: find a ResNet-IBN implementation and add SE on top
+
+relational matrix:
+- quantify relationship between image pairs with Grid-Based Motion Statistics (GMS)
+- for each image, extract 10000 ORB features (w/ orientation) and find nearest neighbors by brute force (hamming dist)
+
+RPTM scheme (big idea of the paper):
+- when selecting anchor positive pairs, take the image whose number of GMS matches with the anchor is closest to threshold tau
+- use batch hard triplet mining for negative selection
+
+Loss: E = \lambda_ent * E_ent + \lambda_tri * E_tri; E_ent = entropy loss; E_tri = triplet loss
+
+hyperparams:
+> Stochastic Gradient Descent(SGD) is used as the optimiser for the model
+> The initial learning rate is initialised at 0.005 and is set to decay by a factor of 0.1 every 20 epochs.
+> The model is trained for 80 epochs with a batch size of 24
+
+"""
+
 import random
 from PIL import Image
 import re
 import copy
 import os
+import numpy as np
+import cv2
 from collections import defaultdict
 
 import torch
@@ -91,19 +123,6 @@ class VeRi(torch.utils.data.Dataset):
             negative = self.transform(negative)
 
         return anchor, positive, negative
-
-# https://github.com/seba-1511/dist_tuto.pth/blob/gh-pages/train_dist.py
-class Partition(object):
-    def __init__(self, data, index):
-        self.data = data
-        self.index = index
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, index):
-        data_idx = self.index[index]
-        return self.data[data_idx]
 
 
 if __name__ == "__main__":
