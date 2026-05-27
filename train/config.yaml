@@ -5,3 +5,8 @@ remote:
   dir: /mnt/beegfs/home/jpindell2022/ouri_project/mltests/caridentify
   host: 131.91.163.212
   user: jpindell2022
+
+model:
+  epochs: 80
+  batch_size: 24
+  
