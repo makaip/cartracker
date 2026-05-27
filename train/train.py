@@ -47,13 +47,13 @@ from utils import SEBlock, IBN
 # final layer needed to get 128-dim embedding for triplet loss
 
 class EmbeddingNet(nn.Module):
-    def __init__(self):
+    def __init__(self, num_classes=576):
         super().__init__()
 
         base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
 
         # add IBN to to resnet
-        for layer in [base.layer1, base.layer2]:      # target first two layers
+        for layer in [base.layer1, base.layer2]:        # target first two layers
             for block in layer:
                 out_channels = block.bn1.num_features   # get num of channels in layer
                 block.bn1 = IBN(out_channels)           # replace first BN layer with IBN
@@ -92,16 +92,27 @@ class EmbeddingNet(nn.Module):
             base.avgpool, # output: (B, 2048, 1, 1)
         )
 
-        self.encoder = nn.Sequential(*list(base.children())[:-1])   # remove final classification layer
-        self.fc1 = nn.Linear(2048, 512)                             # resnet50 outputs 2048-dim features
-        self.fc2 = nn.Linear(512, 128)                              # replace it with a different one
+        # note that for inference, we generate embeddings, but for training we do a classifier, so we skip allis
+        # self.encoder = nn.Sequential(*list(base.children())[:-1])   # remove final classification layer
+        # self.fc1 = nn.Linear(2048, 512)                             # resnet50 outputs 2048-dim features
+        # self.fc2 = nn.Linear(512, 128)                              # replace it with a different one
+
+        self.embed_bn = nn.BatchNorm1d(2048)            # batch norm for embedding
+        self.classifier = nn.Linear(2048, num_classes)  # classifier head for CE loss
     
     def forward(self, x):
-        x = self.encoder(x).flatten(1).clone()  # use flatten(1) over squeeze() squeeze() with batch_size=1 collapses batch dim too
-        # .clone() breaks the inplace version chain
-        x = torch.nn.functional.relu(self.fc1(x))
-        x = self.fc2(x)
-        return nn.functional.normalize(x, p=2, dim=1)  # L2 norm. cosine similarity
+        x = self.backbone(x)                # output: (B, 2048, 1, 1)
+        x = x.flatten(1)                    # output: (B, 2048)
+        embed = self.embed_bn(x)            # output: (B, 2048) -> triplet loss
+        logits = self.classifier(embed)     # output: (B, num_classes) -> CE loss
+
+        return embed, logits
+
+        # x = self.encoder(x).flatten(1).clone()  # use flatten(1) over squeeze() squeeze() with batch_size=1 collapses batch dim too
+        # # .clone() breaks the inplace version chain
+        # x = torch.nn.functional.relu(self.fc1(x))
+        # x = self.fc2(x)
+        # return nn.functional.normalize(x, p=2, dim=1)  # L2 norm. cosine similarity
 
 if __name__ == "__main__":
     print(torch.cuda.is_available())
