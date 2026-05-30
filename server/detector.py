@@ -35,13 +35,11 @@ print("Cuda is available:", torch.cuda.is_available())
 
 from model import EmbeddingNet
 
-def _preprocess_crop(crop_bgr: np.ndarray) -> torch.Tensor:
-    resized = cv2.resize(crop_bgr, (224, 224))
-    rgb_crop = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    # HWC -> CHW
-    rgb_crop = rgb_crop.transpose(2, 0, 1)
-    # To float [0, 1]
-    return torch.from_numpy(rgb_crop).float().div(255.0)
+def _preprocess_crop(crop_bgr: np.ndarray, device: torch.device) -> torch.Tensor:
+    crop_rgb = crop_bgr[:, :, ::-1].copy()  # BGR to RGB
+    # HWC -> CHW, convert to float [0, 1], push to GPU
+    tensor = torch.from_numpy(crop_rgb).permute(2, 0, 1).to(device, dtype=torch.float32).div(255.0)
+    return transforms.functional.resize(tensor, [224, 224], antialias=True)
 
 def batch_classify_cars(crops: list[np.ndarray],
                         device: torch.device, 
@@ -50,8 +48,8 @@ def batch_classify_cars(crops: list[np.ndarray],
     if not crops:
         return torch.empty((0, 2048), device=device)
 
-    tensors = [_preprocess_crop(crop) for crop in crops]
-    batch_tensor = torch.stack(tensors).to(device)
+    tensors = [_preprocess_crop(crop, device) for crop in crops]
+    batch_tensor = torch.stack(tensors)
 
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
@@ -87,7 +85,7 @@ def precalc_targets(device: torch.device,
                 if img is None:
                     continue
                 
-                img_tensor = _preprocess_crop(img).unsqueeze(0).to(device)
+                img_tensor = _preprocess_crop(img, device).unsqueeze(0)
                 mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
                 std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
                 img_tensor = img_tensor.sub(mean).div(std)
