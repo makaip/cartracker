@@ -41,23 +41,12 @@ class VeRi(torch.utils.data.Dataset):
         return len(self.imgs)
     
     def __getitem__(self, idx):
-        anchor_name, anchor_vid = self.imgs[idx]
-        
-        # positive sample
-        pos_candidates = [n for n in self.vid2imgs[anchor_vid] if n != anchor_name]
-        pos_name = random.choice(pos_candidates) if pos_candidates else anchor_name
-        
-        # negative sample
-        neg_vid = random.choice([vid for vid in self.vid2imgs.keys() if vid != anchor_vid])
-        neg_name = random.choice(self.vid2imgs[neg_vid])
-
-        anchor = Image.open(os.path.join(self.root, anchor_name)).convert('RGB')
-        positive = Image.open(os.path.join(self.root, pos_name)).convert('RGB')
-        negative = Image.open(os.path.join(self.root, neg_name)).convert('RGB')
+        # move the anchor/pos/neg selection logic outside of dataset
+        img_name, vid = self.imgs[idx]
+        img = Image.open(os.path.join(self.root, img_name)).convert('RGB')
 
         if self.transform:
-            anchor = self.transform(anchor)
-            positive = self.transform(positive)
-            negative = self.transform(negative)
+            img = self.transform(img)
 
-        return anchor, positive, negative
+        label = self.vid2idx[vid]
+        return img, label, idx
