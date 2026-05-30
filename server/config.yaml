@@ -11,3 +11,4 @@ server:
   num_gpus: 4
   frame_queue_maxsize: 64
   result_queue_maxsize: 256
+  profile: true

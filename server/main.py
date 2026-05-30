@@ -18,6 +18,10 @@ import queue
 from retrieve import generate_frames, process_camera_stream
 import database
 
+import cProfile
+import pstats
+import io
+
 SERVER_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SERVER_DIR.parent
 YOLO_CONFIG_DIR = PROJECT_DIR / '.cache' / 'ultralytics'

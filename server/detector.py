@@ -35,20 +35,33 @@ print("Cuda is available:", torch.cuda.is_available())
 
 from model import EmbeddingNet
 
-transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(
-            brightness=0.2,
-            contrast=0.2,
-            saturation=0.2,
-            hue=0.1
-        ),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
+def _preprocess_crop(crop_bgr: np.ndarray) -> torch.Tensor:
+    resized = cv2.resize(crop_bgr, (224, 224))
+    rgb_crop = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    # HWC -> CHW
+    rgb_crop = rgb_crop.transpose(2, 0, 1)
+    # To float [0, 1]
+    return torch.from_numpy(rgb_crop).float().div(255.0)
+
+def batch_classify_cars(crops: list[np.ndarray],
+                        device: torch.device, 
+                        classifier: EmbeddingNet
+                        ) -> torch.Tensor:
+    if not crops:
+        return torch.empty((0, 2048), device=device)
+
+    tensors = [_preprocess_crop(crop) for crop in crops]
+    batch_tensor = torch.stack(tensors).to(device)
+
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+    batch_tensor = batch_tensor.sub(mean).div(std)
+
+    with torch.no_grad():
+        embeddings, _ = classifier(batch_tensor)
+        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    
+    return embeddings
 
 def precalc_targets(device: torch.device, 
                     classifier: EmbeddingNet
@@ -73,8 +86,11 @@ def precalc_targets(device: torch.device,
                 img = cv2.imread(str(img_path))
                 if img is None:
                     continue
-                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                img_tensor = transform(img).unsqueeze(0).to(device)
+                
+                img_tensor = _preprocess_crop(img).unsqueeze(0).to(device)
+                mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+                img_tensor = img_tensor.sub(mean).div(std)
 
                 with torch.no_grad():
                     emb, _ = classifier(img_tensor)
@@ -94,21 +110,6 @@ def build_target_matrix(targets: dict[str, torch.Tensor]) -> torch.Tensor | None
         return None
 
     return torch.stack(list(targets.values()), dim=0)
-
-def classify_car(frame_array: np.ndarray,
-                       device: torch.device, 
-                       classifier: EmbeddingNet
-                       ) -> torch.Tensor:
-    # Convert BGR array to RGB for accurate inference
-    frame_array = cv2.cvtColor(frame_array, cv2.COLOR_BGR2RGB)
-    input_tensor = transform(frame_array).unsqueeze(0)  # add batch dimension
-    input_tensor = input_tensor.to(device)
-
-    with torch.no_grad():
-        embedding, _ = classifier(input_tensor)
-        embedding = torch.nn.functional.normalize(embedding, p=2, dim=1)
-    
-    return embedding
 
 def match_embedding(embedding: torch.Tensor, 
                           target_matrix: torch.Tensor
@@ -142,6 +143,17 @@ def gpu_worker(
     target_uuids = list(targets.keys())
     target_matrix = build_target_matrix(targets)
 
+    # profiling setup
+    profiler = None
+    profile_path = None
+    if config.get('profile', False):
+        import cProfile
+        profiler = cProfile.Profile()
+        profiler.enable()
+        profile_path = SERVER_DIR / f'cProfile_gpu_{gpu_id}.txt'
+        print(f"[GPU {gpu_id}] Live profiling enabled. Writing stats every 50 frames to {profile_path}")
+
+    frame_count = 0
     # event loop - update
     while not stop_event.is_set():
         if update_event.is_set():
@@ -166,6 +178,9 @@ def gpu_worker(
         yolo_results = detector.predict(frame_array, device=device, classes=[2, 3, 5, 7], verbose=False)
 
         frame_detections = []
+        valid_crops = []
+        valid_boxes = []
+        vehicle_ids = []
 
         for i, result in enumerate(yolo_results[0].boxes):
             x1, y1, x2, y2 = result.xyxy[0].int().tolist()
@@ -178,37 +193,47 @@ def gpu_worker(
                 continue
                 
             car_image = frame_array[y1:y2, x1:x2]
-            embedding = classify_car(car_image, device, classifier)
+            valid_crops.append(car_image)
+            valid_boxes.append([x1, y1, x2, y2])
+            vehicle_ids.append(i)
 
-            """
-            simmilarity matrix format
-            format:
-                target_uuid: {
-                    vehicle_id: <similarity_score>,
-                    ...
-                }
-                ...
-            """
+        if valid_crops:
+            embeddings = batch_classify_cars(valid_crops, device, classifier)
 
-            sim_matrix = []
+            for idx, embedding in enumerate(embeddings):
+                sim_matrix = []
+                similarity = match_embedding(embedding.unsqueeze(0), target_matrix)
+                
+                if similarity is not None and len(target_uuids) > 0:
+                    matched_idx = similarity.argmax().item()
+                    matched_uuid = target_uuids[matched_idx]
+                    sim_matrix.append((matched_uuid, similarity.max().item()))
 
-            similarity = match_embedding(embedding, target_matrix)
-            if similarity is not None and len(target_uuids) > 0:
-                matched_idx = similarity.argmax().item()
-                matched_uuid = target_uuids[matched_idx]
-                sim_matrix.append((matched_uuid, similarity.max().item()))
-
-            frame_detections.append({
-                "vehicle_id": i,
-                "box": [x1, y1, x2, y2],
-                "matches": sim_matrix
-            })
+                frame_detections.append({
+                    "vehicle_id": vehicle_ids[idx],
+                    "box": valid_boxes[idx],
+                    "matches": sim_matrix
+                })
 
         try:
             result_queue.put_nowait({
                 "camera_uuid": camera_uuid,
-                "timestamp": time.time(),
                 "detections": frame_detections
             })
         except queue.Full:
             pass
+        except:
+            pass
+
+        if profiler:
+            frame_count += 1
+            if frame_count % 50 == 0:
+                import pstats
+                profiler.disable()
+                try:
+                    with open(profile_path, 'w') as stream:
+                        stats = pstats.Stats(profiler, stream=stream).sort_stats('tottime')
+                        stats.print_stats(50)
+                except Exception as e:
+                    pass
+                profiler.enable()
