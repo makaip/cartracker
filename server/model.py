@@ -50,6 +50,41 @@ class IBN(nn.Module):
 
 # DUPLICATED FROM train/model.py
 
+class SEIBNBlock(nn.Module):
+    def __init__(self, block, se):
+        super().__init__()
+        self.conv1 = block.conv1
+        self.bn1 = block.bn1
+        self.relu = block.relu
+        self.conv2 = block.conv2
+        self.bn2 = block.bn2
+        self.conv3 = block.conv3
+        self.bn3 = block.bn3
+        self.downsample = block.downsample
+        self.se = se
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        out = self.se(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
 class EmbeddingNet(nn.Module):
     def __init__(self, num_classes=576):
         super().__init__()
@@ -62,36 +97,10 @@ class EmbeddingNet(nn.Module):
                 block.bn1 = IBN(out_channels)
 
         for layer in [base.layer1, base.layer2, base.layer3, base.layer4]:
-            for block in layer:
+            for i, block in enumerate(layer):
                 out_channels = block.bn3.num_features
                 se = SEBlock(out_channels)
-                block.se = se
-
-                def create_forward(b, s):
-                    def block_forward(x):
-                        id = x
-
-                        out = b.conv1(x)
-                        out = b.bn1(out)
-                        out = b.relu(out)
-                        out = b.conv2(out)
-                        out = b.bn2(out)
-                        out = b.relu(out)
-                        out = b.conv3(out)
-                        out = b.bn3(out)
-
-                        out = s(out)
-
-                        if b.downsample is not None:
-                            id = b.downsample(x)
-
-                        out += id
-                        out = b.relu(out)
-
-                        return out
-                    return block_forward
-
-                block.forward = create_forward(block, se)
+                layer[i] = SEIBNBlock(block, se)
 
         self.backbone = nn.Sequential(
             base.conv1, base.bn1, base.relu, base.maxpool,

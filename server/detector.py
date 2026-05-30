@@ -132,12 +132,17 @@ def gpu_worker(
     # setup worker - init
     device = torch.device(f"cuda:{gpu_id}" if torch.cuda.is_available() else "cpu")
     detector = YOLO(str(SERVER_DIR / 'yolov8s.pt'))
+
+    # alternatively export this to TensorRT. will prob do later bc startup is slow
+    # detector.export(format='engine', device=gpu_id)
+    
     detector.to(device)  # force GPU
 
     classifier = EmbeddingNet()
     classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_rtpm_rn50.pt', map_location=device, weights_only=True))
     classifier.to(device)
     classifier.eval()
+    classifier = torch.compile(classifier)
 
     targets = precalc_targets(device, classifier)
     target_uuids = list(targets.keys())
