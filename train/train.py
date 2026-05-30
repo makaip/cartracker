@@ -22,9 +22,10 @@ if __name__ == "__main__":
     local_rank = int(os.environ['LOCAL_RANK'])
     torch.cuda.set_device(local_rank)
 
-    num_classes = 776  # VeRi-776
+    # num_classes = 776  
+    # # VeRi-776, BUT there are 576 VIDs in the training dataset
 
-    model = EmbeddingNet().cuda(local_rank)
+    model = EmbeddingNet(num_classes=576).cuda(local_rank)
     model = DDP(model, device_ids=[local_rank], broadcast_buffers=False)
 
     optimizer = torch.optim.SGD(

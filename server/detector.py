@@ -136,7 +136,7 @@ def gpu_worker(
     detector.to(device)  # force GPU
 
     classifier = EmbeddingNet()
-    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_emb_rn50.pt', map_location=device))
+    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_rtpm_rn50.pt', map_location=device))
     classifier.to(device)
     classifier.eval()
 
