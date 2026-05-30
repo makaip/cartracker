@@ -75,19 +75,19 @@ async def lifespan(app: FastAPI):
     broadcaster_task = asyncio.create_task(result_broadcaster())
     
     stop_event = MP_CONTEXT.Event()
-    update_event = MP_CONTEXT.Event()
     
     workers = []
     import torch
     num_gpus_available = torch.cuda.device_count() if torch.cuda.is_available() else 1
     num_workers = min(NUM_GPUS, num_gpus_available)
+    update_events = [MP_CONTEXT.Event() for _ in range(num_workers)]
     print(f"Starting {num_workers} GPU workers...")
     for i in range(num_workers):
-        p = MP_CONTEXT.Process(target=run_worker, args=(i, frame_queue, result_queue, stop_event, update_event))
+        p = MP_CONTEXT.Process(target=run_worker, args=(i, frame_queue, result_queue, stop_event, update_events[i]))
         p.start()
         workers.append(p)
         
-    app.state.update_event = update_event
+    app.state.update_events = update_events
 
     camera_tasks = []
     cameras = load_cameras()
@@ -189,7 +189,7 @@ async def add_vehicle(pictures: list[UploadFile] = File(...), name: str = Form(N
                 shutil.copyfileobj(f.file, buffer)
             
     database.add_vehicle(vehicle_uuid, name)
-    app.state.update_event.set() # update embeddings in GPU workers
+    for e in app.state.update_events: e.set() # update embeddings in GPU workers
 
     return {"uuid": vehicle_uuid, "name": name}
     
@@ -205,7 +205,7 @@ async def delete_vehicle(uuid: str = Form(...)):
     if upload_path.exists():
         shutil.rmtree(upload_path)
     
-    app.state.update_event.set() # update embeddings in GPU workers
+    for e in app.state.update_events: e.set() # update embeddings in GPU workers
     return {"status": "deleted", "uuid": vehicle_uuid}
 
 if __name__ == '__main__':

@@ -32,12 +32,7 @@ import os
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import torchvision.transforms as transforms
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 
-from dataset import VeRi
 from utils import SEBlock, IBN
 
 # training script for vehicle identification embedding model using VeRi dataset and triplet loss

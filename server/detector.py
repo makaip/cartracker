@@ -33,30 +33,22 @@ with open(SERVER_DIR / 'config.yaml', 'r') as f:
 
 print("Cuda is available:", torch.cuda.is_available())
 
-# from train/train.py
-class EmbeddingNet(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        self.encoder = nn.Sequential(*list(base.children())[:-1])   # remove final classification layer
-        self.fc1 = nn.Linear(2048, 512)                             # resnet50 outputs 2048-dim features
-        self.fc2 = nn.Linear(512, 128)                              # replace it with a different one
-    
-    def forward(self, x):
-        x = self.encoder(x).flatten(1).clone()  # use flatten(1) over squeeze() squeeze() with batch_size=1 collapses batch dim too
-        # .clone() breaks the inplace version chain
-        x = torch.nn.functional.relu(self.fc1(x))
-        x = self.fc2(x)
-        return nn.functional.normalize(x, p=2, dim=1)  # L2 norm. cosine similarity
+from model import EmbeddingNet
 
 transform = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                         std=[0.229, 0.224, 0.225]),
-])
+        transforms.ToPILImage(),
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(
+            brightness=0.2,
+            contrast=0.2,
+            saturation=0.2,
+            hue=0.1
+        ),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
 
 def precalc_targets(device: torch.device, 
                     classifier: EmbeddingNet
@@ -81,14 +73,17 @@ def precalc_targets(device: torch.device,
                 img = cv2.imread(str(img_path))
                 if img is None:
                     continue
-                img_tensor = transform(np.array(img)).unsqueeze(0).to(device)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img_tensor = transform(img).unsqueeze(0).to(device)
 
                 with torch.no_grad():
-                    emb = classifier(img_tensor)
+                    emb, _ = classifier(img_tensor)
+                    emb = torch.nn.functional.normalize(emb, p=2, dim=1)
                 embs.append(emb)
         
         if embs:
             mean_emb = torch.mean(torch.cat(embs, dim=0), dim=0)
+            mean_emb = torch.nn.functional.normalize(mean_emb.unsqueeze(0), p=2, dim=1).squeeze(0)
             targets[uuid] = mean_emb
     
     return targets
@@ -103,12 +98,15 @@ def build_target_matrix(targets: dict[str, torch.Tensor]) -> torch.Tensor | None
 def classify_car(frame_array: np.ndarray,
                        device: torch.device, 
                        classifier: EmbeddingNet
-                       ) -> np.ndarray:
-    input_tensor = transform(frame_array).unsqueeze(0)  # add batch dimension (# of tensors)
+                       ) -> torch.Tensor:
+    # Convert BGR array to RGB for accurate inference
+    frame_array = cv2.cvtColor(frame_array, cv2.COLOR_BGR2RGB)
+    input_tensor = transform(frame_array).unsqueeze(0)  # add batch dimension
     input_tensor = input_tensor.to(device)
 
     with torch.no_grad():
-        embedding = classifier(input_tensor)
+        embedding, _ = classifier(input_tensor)
+        embedding = torch.nn.functional.normalize(embedding, p=2, dim=1)
     
     return embedding
 
@@ -136,7 +134,7 @@ def gpu_worker(
     detector.to(device)  # force GPU
 
     classifier = EmbeddingNet()
-    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_rtpm_rn50.pt', map_location=device))
+    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_rtpm_rn50.pt', map_location=device, weights_only=True))
     classifier.to(device)
     classifier.eval()
 
@@ -173,6 +171,9 @@ def gpu_worker(
             x1, y1, x2, y2 = result.xyxy[0].int().tolist()
             
             # handle out of bounds bounding boxes securely
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(frame_array.shape[1], x2), min(frame_array.shape[0], y2)
+
             if y2 <= y1 or x2 <= x1:
                 continue
                 
