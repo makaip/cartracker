@@ -81,7 +81,18 @@ def main():
 
     print("\n[4/7] Transferring codebase to cluster...")    
     try:
-        run_cmd(["scp", str(local_dir / "train.py"), str(local_dir / job_script), str(project_dir / "requirements.txt"), f"{remote_uri}:{remote_dir}/"])
+        run_cmd([
+            "scp",
+            str(local_dir / "train.py"),
+            str(local_dir / "model.py"),
+            str(local_dir / "dataset.py"),
+            str(local_dir / "utils.py"),
+            str(local_dir / "rel_mat.py"),
+            str(local_dir / "rel_mat.npy"),
+            str(local_dir / job_script),
+            str(project_dir / "requirements.txt"),
+            f"{remote_uri}:{remote_dir}/",
+        ])
         
         # print("Upgrading pip...")
         # run_ssh(remote_uri, f"source '{venv_path}/bin/activate' && pip install --upgrade pip")

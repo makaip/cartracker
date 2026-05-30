@@ -65,26 +65,28 @@ class EmbeddingNet(nn.Module):
                 se = SEBlock(out_channels)              # make SE block
                 block.se = se                           # and set it in the layer
 
-                def block_forward(x):                   # wrap each residual block's forward function to add SE before residual
-                    id = x                              # identity connection   (residual: y = F(x) + x)
+                def create_forward(b, s):
+                    def block_forward(x):                   # wrap each residual block's forward function to add SE before residual
+                        id = x                              # identity connection   (residual: y = F(x) + x)
 
-                    # copy the normal architecture
-                    out = block.conv1(x); out = block.bn1(out); out = block.relu(out)
-                    out = block.conv2(x); out = block.bn2(out); out = block.relu(out)
-                    out = block.conv3(x); out = block.bn3(out)
+                        # copy the normal architecture
+                        out = b.conv1(x); out = b.bn1(out); out = b.relu(out)
+                        out = b.conv2(out); out = b.bn2(out); out = b.relu(out)
+                        out = b.conv3(out); out = b.bn3(out)
 
-                    # apply SE block
-                    out = se(out)
+                        # apply SE block
+                        out = s(out)
 
-                    if block.downsample is not None:
-                        id = block.downsample(x)
-                    
-                    out += id
-                    out = block.relu(out)
+                        if b.downsample is not None:
+                            id = b.downsample(x)
+                        
+                        out += id
+                        out = b.relu(out)
 
-                    return out
+                        return out
+                    return block_forward
 
-                block.forward = block_forward
+                block.forward = create_forward(block, se)
 
         self.backbone = nn.Sequential(
             base.conv1, base.bn1, base.relu, base.maxpool,

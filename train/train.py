@@ -77,9 +77,11 @@ if __name__ == "__main__":
     for epoch in range(epochs):
         sampler.set_epoch(epoch)
         model.train()
-        loss = 0.0
+        total_loss = 0.0
 
         for img, label, idx in dataloader:
+            loss = 0.0
+
             img = img.cuda(local_rank, non_blocking=True)
             label = label.cuda(local_rank, non_blocking=True)
 
@@ -90,12 +92,14 @@ if __name__ == "__main__":
             triplets = rtpm(embeds, label, idx, rel_matrix)     # RTPM triplets
 
             if triplets:
-                a = embeds[[t[0] for t in triplets]]
-                p = embeds[[t[1] for t in triplets]]
-                n = embeds[[t[2] for t in triplets]]
+                a = embeds[[t[0] for t in triplets]]            # anchor
+                p = embeds[[t[1] for t in triplets]]            # positive
+                n = embeds[[t[2] for t in triplets]]            # negative
+
+                e_tri = tri_loss_fn(a, p, n)                    # triplet loss
 
                 # im using lambda=1.0 for both losses, might adjust later tho
-                e_tri = e_ent + e_tri
+                loss = e_ent + e_tri
             else:
                 # if there's no triplets then just use entropy loss
                 loss = e_ent
@@ -108,7 +112,7 @@ if __name__ == "__main__":
 
         if local_rank == 0:
             print(
-                f"Epoch {epoch+1}/{epochs}, Loss: {loss/len(dataloader):.4f}")
+                f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
 
     dist.destroy_process_group()
 
