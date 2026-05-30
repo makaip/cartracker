@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 
 import multiprocessing as mp
+from multiprocessing import shared_memory
 import queue
 
 from retrieve import generate_frames, process_camera_stream
@@ -42,7 +43,7 @@ WS_HOST = config['ws_host']
 WS_PORT = config['ws_port']
 NUM_GPUS = config['num_gpus']
 
-frame_queue = MP_CONTEXT.Queue(maxsize=FRAME_QUEUE_MAXSIZE)     # in: (camera_uuid, frame_array)
+frame_queue = MP_CONTEXT.Queue(maxsize=FRAME_QUEUE_MAXSIZE)     # in: dict containing shm pointers
 result_queue = MP_CONTEXT.Queue(maxsize=RESULT_QUEUE_MAXSIZE)   # out: match payload dict
 
 # ----
@@ -109,10 +110,29 @@ async def lifespan(app: FastAPI):
         task.cancel()
     broadcaster_task.cancel()
     stop_event.set()
+    
     for _ in workers:
-        frame_queue.put(None)
+        try:
+            frame_queue.put_nowait(None)
+        except queue.Full:
+            pass
+            
     for p in workers:
         p.join()
+    
+    # clean up any remaining shared memory blocks left in the queue on shutdown
+    while not frame_queue.empty():
+        try:
+            item = frame_queue.get_nowait()
+            if item is not None and isinstance(item, dict) and 'shm_name' in item:
+                try:
+                    shm = shared_memory.SharedMemory(name=item['shm_name'])
+                    shm.close()
+                    shm.unlink()
+                except Exception:
+                    pass
+        except queue.Empty:
+            break
 
 app = FastAPI(lifespan=lifespan)
 

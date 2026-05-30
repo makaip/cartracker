@@ -1,11 +1,13 @@
 import asyncio
 import json
 import time
+import queue
 from io import BytesIO
 import numpy as np
 import av
 import cv2
 import multiprocessing as mp
+from multiprocessing import shared_memory
 import yaml
 from pathlib import Path
 
@@ -41,10 +43,39 @@ def _stream_loop(url: str, camera_uuid: str, frame_queue: mp.Queue, camera_statu
             LATEST_FRAMES[camera_uuid] = jpeg_bytes
 
             if frame_count % frame_skip == 0:
+                shm = None
                 try:
-                    frame_queue.put_nowait((camera_uuid, frame_array))
-                except Exception:
-                    pass
+                    # allocate shared memory block based on array size
+                    shm = shared_memory.SharedMemory(create=True, size=frame_array.nbytes)
+                    shm_array = np.ndarray(frame_array.shape, dtype=frame_array.dtype, buffer=shm.buf)
+                    shm_array[:] = frame_array[:]  # direct memory copy
+
+                    frame_queue.put_nowait({
+                        'camera_uuid': camera_uuid,
+                        'shm_name': shm.name,
+                        'shape': frame_array.shape,
+                        'dtype': frame_array.dtype.str
+                    })
+
+                    # close local handle
+                    # data persists until unlinked
+
+                    shm.close()
+
+                except queue.Full: # if queue full clean up memory block so no leak
+                    if shm is not None:
+                        shm.close()
+                        shm.unlink()
+
+                except Exception as e:
+                    if shm is not None:
+                        shm.close()
+
+                        try:
+                            shm.unlink()
+                        except FileNotFoundError:
+                            pass
+
     except Exception as e:
         return e
     return None

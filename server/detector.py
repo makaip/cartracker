@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 import cv2
 import multiprocessing as mp
+from multiprocessing import shared_memory
 from multiprocessing.synchronize import Event as MpEvent
 import yaml
 import time
@@ -170,10 +171,26 @@ def gpu_worker(
             if (item := frame_queue.get(timeout=1.0)) is None:
                 continue
 
-            camera_uuid, frame_array = item
+            camera_uuid = item['camera_uuid']
+            shm_name = item['shm_name']
+            shape = item['shape']
+            dtype = item['dtype']
+
+            shm = shared_memory.SharedMemory(name=shm_name)  # reconstruct array from shared memory pointer
+
+            try:
+                shm_array = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
+                frame_array = shm_array.copy()  # copy immediately to release block
+            finally:
+                # prevent mem leak
+                shm.close()
+                shm.unlink()
         
         except queue.Empty:
             continue
+        except Exception as e:
+            continue
+            
         if target_matrix is None:
             target_uuids = []
         
