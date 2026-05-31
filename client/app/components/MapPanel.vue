@@ -8,9 +8,10 @@
 </template>
 
 <script setup lang="ts">
+import { icon } from 'leaflet'
 import { ref, onMounted, watch } from 'vue'
 
-const { cameraDetections, trackedVehicle } = useVideoStream()
+const { cameraDetections, trackedVehicle, isAutoMode, selectedCamera, cameraStatus } = useVideoStream()
 const THRESHOLD = 0.4
 
 const cameraLocations = ref<Record<string, {name: string, lat: number, lon: number}>>({})
@@ -63,13 +64,19 @@ onMounted(async () => {
   }).addTo(mapInstance)
 
   for (const [uuid, loc] of Object.entries(cameraLocations.value)) {
-    markers[uuid] = L.marker([loc.lat, loc.lon]).addTo(mapInstance)
+    const marker = L.marker([loc.lat, loc.lon]).addTo(mapInstance)
+    marker.on('click', () => {
+      if (!isAutoMode.value) {
+        selectedCamera.value = uuid
+      }
+    })
+    markers[uuid] = marker
   }
 
   updateMarkers()
 })
 
-watch([cameraDetections, trackedVehicle], () => {
+watch([cameraDetections, trackedVehicle, cameraStatus], () => {
   updateMarkers()
 }, { deep: true })
 
@@ -116,22 +123,34 @@ function updateMarkers() {
     // 40 is a dark green baseline, 255 is bright green
     const greenIntensity = Math.max(40, Math.floor(score * 255))
     
+    let icon_size = 28
     let backgroundColor = `rgb(0, ${greenIntensity}, 0)`
     let borderColor = `rgb(0, ${Math.min(255, greenIntensity + 50)}, 0)`
 
-    if (isGlobalBest) {
+    const isOffline = cameraStatus.value[uuid] === false
+    const hasDetections = (cameraDetections.value[uuid] || []).length > 0
+
+    if (isOffline) {
+      backgroundColor = 'oklch(27.8% 0.033 256.848)' // tailwind gray-500
+      borderColor = 'oklch(37.3% 0.034 259.733)'     // tailwind gray-400
+      icon_size = 12
+    } else if (isGlobalBest) {
       backgroundColor = 'rgb(239, 68, 68)' // tailwind red-500
       borderColor = 'rgb(248, 113, 113)'   // tailwind red-400
+      icon_size = 36
+    } else if (!hasDetections) {
+      backgroundColor = 'oklch(28.2% 0.091 267.935)' // dark blue
+      borderColor = 'oklch(37.9% 0.146 265.522)'     // dark blue border
+      icon_size = 16
     }
 
     // use Leaflet DivIcon for full CSS control over the marker
-
-    let icon_size = 24
 
     const iconHtml = `
       <div style="
         background-color: ${backgroundColor};
         color: white;
+        opacity: 0.9;
         border-radius: 50%;
         width: ${icon_size}px;
         height: ${icon_size}px;
@@ -143,8 +162,10 @@ function updateMarkers() {
         border: 2px solid ${borderColor};
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
         transition: all 0.3s ease;
+        cursor: pointer;
+        pointer-events: auto;
       ">
-        ${score > 0 ? score.toFixed(2) : '-'}
+        ${score > 0 ? score.toFixed(2) : ''}
       </div>
     `
 
@@ -169,6 +190,7 @@ function updateMarkers() {
 
 <style>
 .leaflet-container {
+  background-color: #000;
   z-index: 10 !important;
 }
 </style>

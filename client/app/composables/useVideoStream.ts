@@ -3,21 +3,20 @@ import { ref, computed } from 'vue'
 const AUTO_THRESHOLD = 0.4
 const STATUS_POLL_INTERVAL = 2000 // Poll every 2 seconds
 
+const cameras = ref<Record<string, string>>({})
+const cameraOptions = ref<{ value: string; label: string; disabled?: boolean }[]>([])
+const selectedCamera = ref('')
+const isAutoMode = ref(false)
+
+const isConnected = ref(false)
+let ws: WebSocket | null = null
+let statusPollingInterval: NodeJS.Timeout | null = null
+
+const cameraDetections = ref<Record<string, any[]>>({})
+const cameraStatus = ref<Record<string, boolean>>({})  // camera_uuid -> is_online
+
 export function useVideoStream() {
   const trackedVehicle = useState<string | null>('trackedVehicle', () => null)
-
-  const cameras = ref<Record<string, string>>({})
-  const cameraOptions = ref<{ value: string; label: string; disabled?: boolean }[]>([])
-  const selectedCamera = ref('')
-  const isAutoMode = ref(false)
-
-  const isConnected = ref(false)
-  let ws: WebSocket | null = null
-  let statusPollingInterval: NodeJS.Timeout | null = null
-
-  // State to hold latest detections per camera UUID
-  const cameraDetections = ref<Record<string, any[]>>({})
-  const cameraStatus = ref<Record<string, boolean>>({})  // camera_uuid -> is_online
 
   // Get detections for currently selected camera
   const currentDetections = computed(() => {
