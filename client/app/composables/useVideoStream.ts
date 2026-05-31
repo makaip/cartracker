@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 
-const AUTO_THRESHOLD = 0.85
+const AUTO_THRESHOLD = 0.4
 const STATUS_POLL_INTERVAL = 2000 // Poll every 2 seconds
 
 export function useVideoStream() {
@@ -146,6 +146,7 @@ export function useVideoStream() {
     isAutoMode,
     isConnected,
     currentDetections,
+    cameraDetections,
     cameraStatus,
     fetchCameras,
     fetchCameraStatus,

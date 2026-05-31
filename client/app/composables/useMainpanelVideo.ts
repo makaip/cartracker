@@ -8,7 +8,7 @@ interface Detection {
   matches?: DetectionMatch[]
 }
 
-const THRESHOLD = 0.50
+const THRESHOLD = 0.30
 
 export function useMainpanelVideo(
   trackedVehicle: Ref<string | null>,
