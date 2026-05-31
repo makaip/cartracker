@@ -7,8 +7,8 @@ remote:
 server:
   ws_host: "0.0.0.0"
   ws_port: 8765
-  frame_skip: 15
+  frame_skip: 5
   num_gpus: 4
-  frame_queue_maxsize: 64
-  result_queue_maxsize: 256
+  frame_queue_maxsize: 128
+  result_queue_maxsize: 512
   profile: true

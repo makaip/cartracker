@@ -16,7 +16,8 @@ import multiprocessing as mp
 from multiprocessing import shared_memory
 import queue
 
-from retrieve import generate_frames, process_camera_stream
+import retrieve
+from retrieve import process_camera_stream, generate_frames
 import database
 
 import cProfile
@@ -58,12 +59,8 @@ async def result_broadcaster():
                 await asyncio.sleep(0.05)
                 continue
 
-            payload_str = json.dumps(result_queue.get_nowait())
-            for client in list(CONNECTED_CLIENTS):
-                try:
-                    await client.send_text(payload_str)
-                except Exception as e:
-                    print(f"Error sending to client: {e}")
+            payload = result_queue.get_nowait()
+            retrieve.queue_detection(payload['camera_uuid'], payload['frame_id'], payload)
         except queue.Empty:
             await asyncio.sleep(0.01)
         except Exception as e:
@@ -73,6 +70,15 @@ async def result_broadcaster():
 def run_worker(*args):
     from detector import gpu_worker
     gpu_worker(*args)
+
+async def my_broadcast(payload_str):
+    for client in list(CONNECTED_CLIENTS):
+        try:
+            await client.send_text(payload_str)
+        except Exception:
+            pass
+
+retrieve.BROADCAST_CALLBACK = my_broadcast
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

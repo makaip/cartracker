@@ -1,6 +1,6 @@
 <template>
     <UDashboardGroup>
-        <UDashboardSidebar resizable :default-size="20" :min-size="15" :max-size="50" class="border-r border-default">
+        <UDashboardSidebar resizable :default-size="20" :min-size="15" :max-size="25" class="border-r border-default">
             <Sidebar />
         </UDashboardSidebar>
 
@@ -10,7 +10,7 @@
             </div>
         </UDashboardPanel>
 
-        <UDashboardSidebar side="right" resizable :default-size="25" :min-size="20" :max-size="40" class="border-l border-default">
+        <UDashboardSidebar side="right" resizable :default-size="25" :min-size="20" :max-size="50" class="border-l border-default">
             <MapPanel />
         </UDashboardSidebar>
 

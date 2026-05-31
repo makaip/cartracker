@@ -126,12 +126,12 @@ def main():
         sys.exit(1)
 
     venv_path = f"{remote_dir}/.venv"
-    setup_venv_cmd = (
-        f"if [ ! -d '{venv_path}' ]; then "
-        f"  echo 'Creating venv...'; python3 -m venv '{venv_path}'; "
-        f"fi"
-    )
-    run_ssh(remote_uri, setup_venv_cmd)
+    # setup_venv_cmd = (
+    #     f"if [ ! -d '{venv_path}' ]; then "
+    #     f"  echo 'Creating venv...'; python3 -m venv '{venv_path}'; "
+    #     f"fi"
+    # )
+    # run_ssh(remote_uri, setup_venv_cmd)
 
     try:
         if (project_dir / "requirements.txt").exists():
@@ -141,19 +141,20 @@ def main():
         print("  Uploading server/ directory...")
         scp(local_dir, f"{remote_uri}:{remote_dir}/", recursive=True)
 
-        print("  Upgrading pip...")
-        run_ssh(
-            remote_uri,
-            f"source '{venv_path}/bin/activate' && pip install --upgrade pip -q",
-        )
+        # print("  Upgrading pip...")
+        # run_ssh(
+        #     remote_uri,
+        #     f"source '{venv_path}/bin/activate' && pip install --upgrade pip -q",
+        # )
 
-        print("  Installing Python requirements...")
-        run_ssh(
-            remote_uri,
-            f"cd '{remote_dir}' && source '{venv_path}/bin/activate' && "
-            f"pip install -r requirements.txt "
-            f"--extra-index-url https://download.pytorch.org/whl/cu121 -q",
-        )
+        # print("  Installing Python requirements...")
+        # run_ssh(
+        #     remote_uri,
+        #     f"cd '{remote_dir}' && source '{venv_path}/bin/activate' && "
+        #     f"pip install -r requirements.txt "
+        #     f"--extra-index-url https://download.pytorch.org/whl/cu121 -q",
+        # )
+        
     except subprocess.CalledProcessError as e:
         print(f"Command failed (exit {e.returncode}):\n{e.stdout}\n{e.stderr}")
         sys.exit(1)

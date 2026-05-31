@@ -175,6 +175,7 @@ def gpu_worker(
             shm_name = item['shm_name']
             shape = item['shape']
             dtype = item['dtype']
+            frame_id = item.get('frame_id', 0)
 
             shm = shared_memory.SharedMemory(name=shm_name)  # reconstruct array from shared memory pointer
 
@@ -238,7 +239,8 @@ def gpu_worker(
         try:
             result_queue.put_nowait({
                 "camera_uuid": camera_uuid,
-                "detections": frame_detections
+                "detections": frame_detections,
+                "frame_id": frame_id
             })
         except queue.Full:
             pass
