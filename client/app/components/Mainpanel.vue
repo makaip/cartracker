@@ -2,24 +2,6 @@
 
 <template>
   <div class="flex flex-col h-full w-full">
-    <!-- Toolbar -->
-    <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-800">
-      <div class="flex items-center gap-4">
-        <USelectMenu
-          v-model="selectedCameraItem"
-          :items="cameraOptions"
-          class="w-64"
-          placeholder="Select a camera"
-        />
-        <USwitch v-model="isAutoMode" size="sm" class="ml-4 -mr-2" />
-            <span class="text-xs text-gray-500 mr-2 ml-0">Auto</span>
-      </div>
-      <div>
-        <UBadge v-if="isConnected" color="green">WS Connected</UBadge>
-        <UBadge v-else color="red">WS Disconnected</UBadge>
-      </div>
-    </div>
-
     <!-- Video Feed & Overlays display -->
     <div class="relative flex-1 bg-black overflow-hidden flex items-center justify-center" ref="videoWrapperRef">
       <div v-if="selectedCamera" class="relative inline-block" :style="containerStyle" ref="videoContainerRef">
@@ -61,14 +43,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-
 const {
   trackedVehicle,
-  cameraOptions,
   selectedCamera,
-  isAutoMode,
-  isConnected,
   currentDetections,
   fetchCameras,
   connectWs,
@@ -87,13 +64,6 @@ const {
   getTopMatchScore,
   isHighestMatch
 } = useMainpanelVideo(trackedVehicle, currentDetections)
-
-const selectedCameraItem = computed({
-  get: () => cameraOptions.value.find(cam => cam.value === selectedCamera.value) ?? null,
-  set: (cam: { value: string; label: string } | null) => {
-    selectedCamera.value = cam?.value ?? ''
-  }
-})
 
 onMounted(async () => {
   await fetchCameras()

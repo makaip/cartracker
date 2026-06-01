@@ -1,6 +1,6 @@
 <template>
+
   <div class="flex flex-col h-full w-full">
-    <UDashboardNavbar title="Live Map" />
     <div class="flex-1 relative bg-gray-900">
       <div id="osm-map" class="absolute inset-0 z-0"></div>
     </div>
@@ -172,9 +172,9 @@ function updateMarkers() {
     marker.setIcon(L.divIcon({
       html: iconHtml,
       className: 'bg-transparent border-none',  // override default Leaflet classes
-      iconSize: [36, 36],
-      iconAnchor: [18, 18],                     // center the icon on coords
-      tooltipAnchor: [0, -18]
+      iconSize: [icon_size, icon_size],
+      iconAnchor: [icon_size / 2, icon_size / 2],                     // center the icon on coords
+      tooltipAnchor: [0, -icon_size / 2]
     }))
 
     if (cameraLocations.value[uuid]) {

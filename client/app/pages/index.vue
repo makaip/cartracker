@@ -10,8 +10,8 @@
             </div>
         </UDashboardPanel>
 
-        <UDashboardSidebar side="right" resizable :default-size="25" :min-size="20" :max-size="50" class="border-l border-default">
-            <MapPanel />
+        <UDashboardSidebar side="right" resizable :default-size="25" :min-size="20" :max-size="50" class="border-l border-default" :ui="{ body: 'px-0 py-0' }">
+            <MapPanel class="px-0 py-0 gap-0" />
         </UDashboardSidebar>
 
     </UDashboardGroup>

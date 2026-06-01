@@ -1,6 +1,24 @@
 <template>
   <div class="flex flex-col h-full">
-    <UDashboardNavbar title="Vehicles" />
+    <div class="p-4 border-b border-gray-200 dark:border-gray-800 space-y-4">
+      <div class="flex items-center justify-between gap-4">
+        <USelectMenu
+          v-model="selectedCameraItem"
+          :items="cameraOptions"
+          class="flex-1"
+          placeholder="Select a camera"
+        />
+        <div class="flex items-center">
+          <USwitch v-model="isAutoMode" size="sm" />
+          <span class="text-xs text-gray-500 ml-2">Auto</span>
+        </div>
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="text-sm text-gray-500">Status</span>
+        <UBadge v-if="isConnected" color="green" size="sm">WS Connected</UBadge>
+        <UBadge v-else color="red" size="sm">WS Disconnected</UBadge>
+      </div>
+    </div>
 
     <div class="p-4 border-b border-gray-200 dark:border-gray-800">
       <UModal title="Add Vehicle" v-model="isModalOpen">
@@ -49,7 +67,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
+
+const {
+  cameraOptions,
+  selectedCamera,
+  isAutoMode,
+  isConnected
+} = useVideoStream()
+
+const selectedCameraItem = computed({
+  get: () => cameraOptions.value.find(cam => cam.value === selectedCamera.value) ?? null,
+  set: (cam: { value: string; label: string } | null) => {
+    selectedCamera.value = cam?.value ?? ''
+  }
+})
 
 const {
   trackedVehicle,
