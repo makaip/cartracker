@@ -86,7 +86,7 @@ def _stream_loop(
     camera_status: dict,
     frame_skip: int,
     playback_dq: deque
-) -> None:
+) -> tuple[Exception | None, int]:
 
     try:
         container = av.open(url)
@@ -150,10 +150,11 @@ def _stream_loop(
                             shm.unlink()
                         except FileNotFoundError:
                             pass
-
+    
     except Exception as e:
-        return e
-    return None
+        return e, 0
+    
+    return None, frame_count
 
 
 async def process_camera_stream(
@@ -161,37 +162,43 @@ async def process_camera_stream(
     frame_queue: mp.Queue,
     camera_status: dict
 ) -> None:
-    """continuously push stream frames to the GPU worker queue."""
-
     url = f"https://pbcvideostreams1.pbc.gov/memfs/{camera_uuid}.m3u8"
-
     playback_dq = deque()
-    playback_task = asyncio.create_task(
-        smooth_playback(camera_uuid, playback_dq)
-    )
+    playback_task = asyncio.create_task(smooth_playback(camera_uuid, playback_dq))
 
     while True:
-        e = await asyncio.to_thread(
-            _stream_loop,
-            url,
-            camera_uuid,
-            frame_queue,
-            camera_status,
-            FRAME_SKIP,
-            playback_dq
+        # attempt 1 (try normally)
+        result = await asyncio.to_thread(
+            _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
         )
+        
+        e, frame_count = result if isinstance(result, tuple) else (result, 0)
 
+        if e is None and frame_count > 0:
+            camera_status[camera_uuid] = False
+            await asyncio.sleep(2.0)
+            continue
+
+        # attempt 1 failed or was black (0 frames)
         camera_status[camera_uuid] = False
-
-        if e is not None:
-            error_str = str(e)
-            if '404' in error_str or 'Not Found' in error_str:
-                print(f"Background stream error for {camera_uuid}: {e}")
-            else:
-                print(f"Background stream error for {camera_uuid}: {e}")
-
         await asyncio.sleep(5.0)
 
+        # attempt 2 (refresh)
+        print(f"[{camera_uuid}] Retrying stream...")
+        result = await asyncio.to_thread(
+            _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
+        )
+        e, frame_count = result if isinstance(result, tuple) else (result, 0)
+
+        if e is None and frame_count > 0:
+            camera_status[camera_uuid] = False
+            await asyncio.sleep(2.0)
+            continue
+
+        print(f"[{camera_uuid}] Stream totally offline. Giving up for 60 seconds.")
+        camera_status[camera_uuid] = "FAILED"
+        
+        await asyncio.sleep(60.0)  # wait 60 seconds before retrying
 
 async def generate_frames(
     camera_uuid: str,
