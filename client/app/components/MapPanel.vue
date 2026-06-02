@@ -12,7 +12,7 @@ import { icon } from 'leaflet'
 import { ref, onMounted, watch } from 'vue'
 
 const { cameraDetections, trackedVehicle, isAutoMode, selectedCamera, cameraStatus } = useVideoStream()
-const THRESHOLD = 0.4
+const { matchThreshold } = useSettings()
 
 const cameraLocations = ref<Record<string, {name: string, lat: number, lon: number}>>({})
 const markers: Record<string, any> = {}
@@ -76,7 +76,7 @@ onMounted(async () => {
   updateMarkers()
 })
 
-watch([cameraDetections, trackedVehicle, cameraStatus], () => {
+watch([cameraDetections, trackedVehicle, cameraStatus, matchThreshold], () => {
   updateMarkers()
 }, { deep: true })
 
@@ -117,7 +117,7 @@ function updateMarkers() {
   // 2. Update Map Markers
   for (const [uuid, marker] of Object.entries(markers)) {
     const score = currentScores[uuid] || 0
-    const isGlobalBest = (uuid === globalBestUuid) && (score >= THRESHOLD)
+    const isGlobalBest = (uuid === globalBestUuid) && (score >= matchThreshold.value)
 
     // Calculate darkness of green based on score (0 to 1)
     // 40 is a dark green baseline, 255 is bright green
@@ -173,7 +173,7 @@ function updateMarkers() {
       html: iconHtml,
       className: 'bg-transparent border-none',  // override default Leaflet classes
       iconSize: [icon_size, icon_size],
-      iconAnchor: [icon_size / 2, icon_size / 2],                     // center the icon on coords
+      iconAnchor: [icon_size / 2, icon_size / 2 + 8],                     // center the icon on coords
       tooltipAnchor: [0, -icon_size / 2]
     }))
 

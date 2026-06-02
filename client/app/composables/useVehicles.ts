@@ -2,6 +2,12 @@ import { ref, computed } from 'vue'
 
 export function useVehicles() {
   const trackedVehicle = useState<string | null>('trackedVehicle', () => null)
+  const appConfig = useAppConfig()
+  
+  const backend = (appConfig.backend as any) || {
+    apiUrl: 'http://localhost:8765'
+  }
+  
   const vehicles = ref<any[]>([])
   const isUploading = ref(false)
   const deleting = ref<string | null>(null)
@@ -17,7 +23,7 @@ export function useVehicles() {
 
   const fetchVehicles = async () => {
     try {
-      const res = await fetch('http://localhost:8765/vehicles')
+      const res = await fetch(`${backend.apiUrl}/vehicles`)
       if (res.ok) {
         vehicles.value = await res.json()
       }
@@ -40,7 +46,7 @@ export function useVehicles() {
     if (name) formData.append('name', name)
 
     try {
-      const res = await fetch('http://localhost:8765/add_vehicle', {
+      const res = await fetch(`${backend.apiUrl}/add_vehicle`, {
         method: 'POST',
         body: formData
       })
@@ -66,7 +72,7 @@ export function useVehicles() {
     formData.append('uuid', uuid)
     
     try {
-      const res = await fetch('http://localhost:8765/delete_vehicle', {
+      const res = await fetch(`${backend.apiUrl}/delete_vehicle`, {
         method: 'POST',
         body: formData
       })

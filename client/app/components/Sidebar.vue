@@ -13,10 +13,23 @@
           <span class="text-xs text-gray-500 ml-2">Auto</span>
         </div>
       </div>
-      <div class="flex items-center justify-between">
-        <span class="text-sm text-gray-500">Status</span>
-        <UBadge v-if="isConnected" color="green" size="sm">WS Connected</UBadge>
-        <UBadge v-else color="red" size="sm">WS Disconnected</UBadge>
+      
+      <div class="space-y-3 pt-2">
+        <div class="flex items-center justify-between">
+          <span class="text-sm text-gray-500">Status</span>
+          <UBadge v-if="isConnected" color="green" size="sm">WS Connected</UBadge>
+          <UBadge v-else color="red" size="sm">WS Disconnected</UBadge>
+        </div>
+        
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-500 font-medium tracking-wide">Match Threshold</label>
+          <UInput v-model.number="matchThreshold" type="number" step="0.05" min="0" max="1" size="sm" />
+        </div>
+        
+        <div class="flex flex-col gap-1">
+          <label class="text-xs text-gray-500 font-medium tracking-wide">Poll Interval (ms)</label>
+          <UInput v-model.number="statusPollInterval" type="number" step="100" min="500" size="sm" />
+        </div>
       </div>
     </div>
 
@@ -68,6 +81,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+
+const { matchThreshold, statusPollInterval } = useSettings()
 
 const {
   cameraOptions,

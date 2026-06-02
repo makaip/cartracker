@@ -8,12 +8,12 @@ interface Detection {
   matches?: DetectionMatch[]
 }
 
-const THRESHOLD = 0.40
-
 export function useMainpanelVideo(
   trackedVehicle: Ref<string | null>,
   currentDetections: Ref<Detection[]>
 ) {
+  const { matchThreshold } = useSettings()
+
   const videoElement = ref<HTMLImageElement | null>(null)
   const videoContainerRef = ref<HTMLDivElement | null>(null)
   const videoWrapperRef = ref<HTMLDivElement | null>(null)
@@ -81,7 +81,7 @@ export function useMainpanelVideo(
     if (!trackedVehicle.value || !det.matches) return false
 
     const score = getTopMatchScore(det)
-    if (score === null || score < THRESHOLD) return false
+    if (score === null || score < matchThreshold.value) return false
 
     let highestScore = -1
     let highestDetId: string | null = null
