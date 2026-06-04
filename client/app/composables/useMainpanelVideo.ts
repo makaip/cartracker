@@ -1,14 +1,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, type Ref } from 'vue'
+import type { Detection } from '../types/tracking'
 
-type DetectionMatch = [string, number]
-
-interface Detection {
-  vehicle_id: string
-  box: number[]
-  matches?: DetectionMatch[]
-}
-
-export function useMainpanelVideo(
+export function useMainPanelVideo(
   trackedVehicle: Ref<string | null>,
   currentDetections: Ref<Detection[]>
 ) {

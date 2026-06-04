@@ -66,7 +66,7 @@ const {
   getBboxStyle,
   getTopMatchScore,
   isHighestMatch
-} = useMainpanelVideo(trackedVehicle, currentDetections)
+} = useMainPanelVideo(trackedVehicle, currentDetections)
 
 onMounted(async () => {
   await fetchCameras()

@@ -1,18 +1,20 @@
-import { ref, computed, watch } from 'vue'
+import { computed, watch } from 'vue'
+import { cameraService } from '../services/cameraService'
+import type { CameraOption, CameraMap, CameraStatusMap, CameraDetectionMap } from '../types/camera'
 
-const cameras = ref<Record<string, string>>({})
-const cameraOptions = ref<{ value: string; label: string; disabled?: boolean }[]>([])
-const selectedCamera = ref('')
-const isAutoMode = ref(false)
-
-const isConnected = ref(false)
 let ws: WebSocket | null = null
 let statusPollingInterval: NodeJS.Timeout | null = null
 
-const cameraDetections = ref<Record<string, any[]>>({})
-const cameraStatus = ref<Record<string, boolean>>({})  // camera_uuid -> is_online
-
 export function useVideoStream() {
+  const cameras = useState<CameraMap>('cameras', () => ({}))
+  const cameraOptions = useState<CameraOption[]>('cameraOptions', () => [])
+  const selectedCamera = useState<string>('selectedCamera', () => '')
+  const isAutoMode = useState<boolean>('isAutoMode', () => false)
+
+  const isConnected = useState<boolean>('isConnected', () => false)
+  const cameraDetections = useState<CameraDetectionMap>('cameraDetections', () => ({}))
+  const cameraStatus = useState<CameraStatusMap>('cameraStatus', () => ({}))
+
   const trackedVehicle = useState<string | null>('trackedVehicle', () => null)
   const { matchThreshold, statusPollInterval } = useSettings()
   const appConfig = useAppConfig()
@@ -31,14 +33,11 @@ export function useVideoStream() {
 
   const fetchCameras = async () => {
     try {
-      const res = await fetch(`${backend.apiUrl}/cameras`)
-      if (res.ok) {
-        cameras.value = await res.json()
-        updateCameraOptions()
-        const firstOnlineCamera = cameraOptions.value.find(cam => !cam.disabled)
-        if (firstOnlineCamera) {
-          selectedCamera.value = firstOnlineCamera.value
-        }
+      cameras.value = await cameraService.fetchCameras(backend.apiUrl)
+      updateCameraOptions()
+      const firstOnlineCamera = cameraOptions.value.find(cam => !cam.disabled)
+      if (firstOnlineCamera && !selectedCamera.value) {
+        selectedCamera.value = firstOnlineCamera.value
       }
     } catch (err) {
       console.error('Failed to fetch cameras:', err)
@@ -47,20 +46,8 @@ export function useVideoStream() {
 
   const fetchCameraStatus = async () => {
     try {
-      const res = await fetch(`${backend.apiUrl}/camera_status`)
-      if (res.ok) {
-        cameraStatus.value = await res.json()
-        updateCameraOptions()
-
-        /*
-        if (selectedCamera.value && !cameraStatus.value[selectedCamera.value]) {
-          const firstOnlineCamera = cameraOptions.value.find(cam => !cam.disabled)
-          if (firstOnlineCamera) {
-            selectedCamera.value = firstOnlineCamera.value
-          }
-        }
-        */
-      }
+      cameraStatus.value = await cameraService.fetchCameraStatus(backend.apiUrl)
+      updateCameraOptions()
     } catch (err) {
       console.error('Failed to fetch camera status:', err)
     }
@@ -75,6 +62,8 @@ export function useVideoStream() {
   }
 
   const connectWs = () => {
+    if (import.meta.server) return
+
     ws = new WebSocket(backend.wsUrl)
     
     ws.onopen = () => {
@@ -134,6 +123,7 @@ export function useVideoStream() {
   }
 
   const startStatusPolling = () => {
+    if (import.meta.server) return
     fetchCameraStatus() // Initial fetch
     statusPollingInterval = setInterval(fetchCameraStatus, statusPollInterval.value)
   }
@@ -144,6 +134,7 @@ export function useVideoStream() {
 
   // React to poll interval changes dynamically
   watch(statusPollInterval, (newInterval) => {
+    if (import.meta.server) return
     if (statusPollingInterval) {
       stopStatusPolling()
       statusPollingInterval = setInterval(fetchCameraStatus, newInterval)
