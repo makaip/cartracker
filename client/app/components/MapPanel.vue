@@ -10,7 +10,7 @@
       <div class="absolute bottom-6 left-2 z-[1000] flex flex-col gap-1 px-2 py-1.5 rounded-md bg-default/90 border border-default text-xs text-muted">
         <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-red-500" />Best match</span>
         <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-green-600" />Detections</span>
-        <span class="flex items-center gap-2"><span class="size-2 rounded-full" style="background: oklch(37.9% 0.146 265.522)" />Online, idle</span>
+        <span class="flex items-center gap-2"><span class="size-2 rounded-full" style="background: oklch(37.9% 0.146 265.522)" />Online</span>
         <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-zinc-600" />Offline</span>
       </div>
     </div>
@@ -18,7 +18,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 
 const { cameraDetections, trackedVehicle, isAutoMode, selectedCamera, cameraStatus } = useVideoStream()
 const { matchThreshold } = useSettings()
@@ -27,6 +27,7 @@ const cameraLocations = ref<Record<string, {name: string, lat: number, lon: numb
 const markers: Record<string, any> = {}
 let mapInstance: any = null
 let L: any = null
+let resizeObserver: ResizeObserver | null = null
 
 onMounted(async () => {
   // import leaflet to prevent SSR "window is not defined" errors
@@ -73,6 +74,10 @@ onMounted(async () => {
     maxZoom: 19
   }).addTo(mapInstance)
 
+  // leaflet caches container size at init; recompute when the panel is resized
+  resizeObserver = new ResizeObserver(() => mapInstance?.invalidateSize())
+  resizeObserver.observe(mapInstance.getContainer())
+
   for (const [uuid, loc] of Object.entries(cameraLocations.value)) {
     const marker = L.marker([loc.lat, loc.lon]).addTo(mapInstance)
     marker.on('click', () => {
@@ -84,6 +89,11 @@ onMounted(async () => {
   }
 
   updateMarkers()
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  mapInstance?.remove()
 })
 
 watch([cameraDetections, trackedVehicle, cameraStatus, matchThreshold], () => {
