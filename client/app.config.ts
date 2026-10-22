@@ -1,6 +1,10 @@
 export default defineAppConfig({
   ui: {
-    colorMode: true
+    colorMode: true,
+    colors: {
+      primary: 'sky',
+      neutral: 'zinc'
+    }
   },
   backend: {
     apiUrl: 'http://localhost:8765',

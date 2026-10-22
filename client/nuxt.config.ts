@@ -6,5 +6,10 @@ export default defineNuxtConfig({
   css: ['./assets/css/main.css'],
   colorMode: {
     preference: 'dark'
+  },
+  runtimeConfig: {
+    public: {
+      cartoKey: process.env.CARTO_KEY
+    }
   }
 })

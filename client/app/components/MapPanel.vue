@@ -1,14 +1,23 @@
 <template>
 
   <div class="flex flex-col h-full w-full">
-    <div class="flex-1 relative bg-gray-900">
+    <div class="flex items-center h-12 px-4 border-b border-default text-sm font-medium shrink-0">
+      Map
+    </div>
+    <div class="flex-1 relative bg-black">
       <div id="osm-map" class="absolute inset-0 z-0"></div>
+
+      <div class="absolute bottom-6 left-2 z-[1000] flex flex-col gap-1 px-2 py-1.5 rounded-md bg-default/90 border border-default text-xs text-muted">
+        <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-red-500" />Best match</span>
+        <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-green-600" />Detections</span>
+        <span class="flex items-center gap-2"><span class="size-2 rounded-full" style="background: oklch(37.9% 0.146 265.522)" />Online, idle</span>
+        <span class="flex items-center gap-2"><span class="size-2 rounded-full bg-zinc-600" />Offline</span>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { icon } from 'leaflet'
 import { ref, onMounted, watch } from 'vue'
 
 const { cameraDetections, trackedVehicle, isAutoMode, selectedCamera, cameraStatus } = useVideoStream()
@@ -58,7 +67,8 @@ onMounted(async () => {
 
   mapInstance = L.map('osm-map').setView([startLat, startLon], startZoom)
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  const { cartoKey } = useRuntimeConfig().public
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${cartoKey}`, {
     attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
     maxZoom: 19
   }).addTo(mapInstance)
