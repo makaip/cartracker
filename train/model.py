@@ -9,7 +9,7 @@ triplet mining: https://omoindrot.github.io/triplet-loss#triplet-mining
 
 - Instance-Batch Normalization (IBN)
     - in the feature embedding & extraction stage
-    - TODO: find a ResNet-IBN implementation and add SE on top
+    - backbone is ResNet50-IBN-a with the pretrained weights from https://github.com/XingangPan/IBN-Net
 
 relational matrix:
 - quantify relationship between image pairs with Grid-Based Motion Statistics (GMS)
@@ -19,7 +19,7 @@ RPTM scheme (big idea of the paper):
 - when selecting anchor positive pairs, take the image whose number of GMS matches with the anchor is closest to threshold tau
 - use batch hard triplet mining for negative selection
 
-Loss: E = \lambda_ent * E_ent + \lambda_tri * E_tri; E_ent = entropy loss; E_tri = triplet loss
+Loss: E = \\lambda_ent * E_ent + \\lambda_tri * E_tri; E_ent = entropy loss; E_tri = triplet loss
 
 hyperparams:
 > Stochastic Gradient Descent(SGD) is used as the optimiser for the model
@@ -27,61 +27,41 @@ hyperparams:
 > The model is trained for 80 epochs with a batch size of 24
 
 """
-import os
-
 import torch
 import torch.nn as nn
 import torchvision.models as models
 
-from utils import SEBlock, IBN
+from utils import IBN
 
-# training script for vehicle identification embedding model using VeRi dataset and triplet loss
+# pretrained ResNet50-IBN-a weights (ImageNet), cached under $TORCH_HOME/hub/checkpoints
+IBN_A_URL = 'https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet50_ibn_a-d9d0bb7b.pth'
 
-# resnet input: 3x224x224
-# output: 512-dim embedding
-# final layer needed to get 128-dim embedding for triplet loss
+
+def resnet50_ibn_a(pretrained=True):
+    base = models.resnet50(weights=None)
+
+    # IBN-a: the first BN of every block in layers 1-3 is half IN, half BN (layer4 stays plain BN)
+    # the module/attribute names match IBN-Net so its checkpoint loads as is
+    for layer in [base.layer1, base.layer2, base.layer3]:
+        for block in layer:
+            block.bn1 = IBN(block.bn1.num_features)
+
+    if pretrained:
+        state = torch.hub.load_state_dict_from_url(IBN_A_URL, map_location='cpu')
+        base.load_state_dict(state)     # strict, so a mismatch fails loudly instead of training from scratch
+
+    return base
+
 
 class EmbeddingNet(nn.Module):
-    def __init__(self, num_classes=576):
+    def __init__(self, num_classes=576, pretrained=True):
         super().__init__()
 
-        base = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        base = resnet50_ibn_a(pretrained)
 
-        # add IBN to to resnet
-        for layer in [base.layer1, base.layer2]:        # target first two layers
-            for block in layer:
-                out_channels = block.bn1.num_features   # get num of channels in layer
-                block.bn1 = IBN(out_channels)           # replace first BN layer with IBN
-
-        # add SE to resnet
-        for layer in [base.layer1, base.layer2, base.layer3, base.layer4]:  # target all layers
-            for block in layer:
-                out_channels = block.bn3.num_features   # get num of channels in layer
-                se = SEBlock(out_channels)              # make SE block
-                block.se = se                           # and set it in the layer
-
-                def create_forward(b, s):
-                    def block_forward(x):                   # wrap each residual block's forward function to add SE before residual
-                        id = x                              # identity connection   (residual: y = F(x) + x)
-
-                        # copy the normal architecture
-                        out = b.conv1(x); out = b.bn1(out); out = b.relu(out)
-                        out = b.conv2(out); out = b.bn2(out); out = b.relu(out)
-                        out = b.conv3(out); out = b.bn3(out)
-
-                        # apply SE block
-                        out = s(out)
-
-                        if b.downsample is not None:
-                            id = b.downsample(x)
-                        
-                        out += id
-                        out = b.relu(out)
-
-                        return out
-                    return block_forward
-
-                block.forward = create_forward(block, se)
+        # last stride 1: keep a 2x larger final feature map (same weights, more spatial detail)
+        base.layer4[0].conv2.stride = (1, 1)
+        base.layer4[0].downsample[0].stride = (1, 1)
 
         self.backbone = nn.Sequential(
             base.conv1, base.bn1, base.relu, base.maxpool,
@@ -89,24 +69,19 @@ class EmbeddingNet(nn.Module):
             base.avgpool, # output: (B, 2048, 1, 1)
         )
 
-        # note that for inference, we generate embeddings, but for training we do a classifier, so we skip allis
-        # self.encoder = nn.Sequential(*list(base.children())[:-1])   # remove final classification layer
-        # self.fc1 = nn.Linear(2048, 512)                             # resnet50 outputs 2048-dim features
-        # self.fc2 = nn.Linear(512, 128)                              # replace it with a different one
+        # BNNeck: triplet loss sees the feature before BN, CE loss and inference see it after BN
+        self.embed_bn = nn.BatchNorm1d(2048)
+        self.embed_bn.bias.requires_grad_(False)
+        self.classifier = nn.Linear(2048, num_classes, bias=False)
+        nn.init.normal_(self.classifier.weight, std=0.001)
 
-        self.embed_bn = nn.BatchNorm1d(2048)            # batch norm for embedding
-        self.classifier = nn.Linear(2048, num_classes)  # classifier head for CE loss
-    
     def forward(self, x):
         x = self.backbone(x)                # output: (B, 2048, 1, 1)
-        x = x.flatten(1)                    # output: (B, 2048)
-        embed = self.embed_bn(x)            # output: (B, 2048) -> triplet loss
+        feat = x.flatten(1)                 # output: (B, 2048) -> triplet loss
+        embed = self.embed_bn(feat)         # output: (B, 2048) -> inference embedding
         logits = self.classifier(embed)     # output: (B, num_classes) -> CE loss
 
-        return embed, logits
+        if self.training:
+            return feat, embed, logits
 
-        # x = self.encoder(x).flatten(1).clone()  # use flatten(1) over squeeze() squeeze() with batch_size=1 collapses batch dim too
-        # # .clone() breaks the inplace version chain
-        # x = torch.nn.functional.relu(self.fc1(x))
-        # x = self.fc2(x)
-        # return nn.functional.normalize(x, p=2, dim=1)  # L2 norm. cosine similarity
+        return embed, logits

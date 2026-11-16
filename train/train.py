@@ -2,17 +2,36 @@ import os
 
 import torch
 import torch.nn as nn
-import torchvision.models as models
 import torchvision.transforms as transforms
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 
-import numpy as np
-
 from model import EmbeddingNet
 from dataset import VeRi
-from utils import rtpm
+from utils import rptm_triplet_loss
+
+# hyperparams follow https://github.com/adhirajghosh/RPTM_reid/blob/main/configs/veri_r101.yml
+IMG_SIZE = 240
+ANCHORS_PER_GPU = 16        # every anchor comes with its RPTM positive, so 32 images per GPU per step
+EPOCHS = 80
+BASE_LR = 0.01              # paper: 0.005 at batch 20. scaled up for 4 GPUs x 16 anchors = 64 per step
+WARMUP_EPOCHS = 10
+WARMUP_FACTOR = 0.01
+LR_STEPS = (20, 40, 60)     # decay by 0.1 at each
+MARGIN = 1.0
+LAMBDA_ENT = 1.0
+LAMBDA_TRI = 1.0
+
+RESULTS_DIR = "/mnt/beegfs/home/jpindell2022/ouri_project/mltests/caridentify/results"
+WEIGHTS_PATH = f"{RESULTS_DIR}/veri_rptm_r50ibn.pth"
+
+
+def lr_factor(epoch):
+    if epoch < WARMUP_EPOCHS:   # linear warmup
+        return WARMUP_FACTOR + (1 - WARMUP_FACTOR) * epoch / WARMUP_EPOCHS
+
+    return 0.1 ** sum(epoch >= step for step in LR_STEPS)
 
 
 if __name__ == "__main__":
@@ -22,31 +41,29 @@ if __name__ == "__main__":
     local_rank = int(os.environ['LOCAL_RANK'])
     torch.cuda.set_device(local_rank)
 
-    # num_classes = 776  
+    # num_classes = 776
     # # VeRi-776, BUT there are 576 VIDs in the training dataset
 
     model = EmbeddingNet(num_classes=576).cuda(local_rank)
     model = DDP(model, device_ids=[local_rank], broadcast_buffers=False)
 
     optimizer = torch.optim.SGD(
-        model.parameters(),         # from paper
-        lr=0.005,
+        [p for p in model.parameters() if p.requires_grad],
+        lr=BASE_LR,
         momentum=0.9,
-        weight_decay=0.0005
+        weight_decay=0.0005,
+        nesterov=True
     )
 
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer,
-        step_size=20,
-        gamma=0.1
-    )
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
 
-    ce_loss_fn = nn.CrossEntropyLoss()
-    tri_loss_fn = nn.TripletMarginLoss(margin=0.3)
+    ce_loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.RandomHorizontalFlip(),
+        transforms.Pad(10),
+        transforms.RandomCrop((IMG_SIZE, IMG_SIZE)),
         transforms.ColorJitter(
             brightness=0.2,
             contrast=0.2,
@@ -56,67 +73,59 @@ if __name__ == "__main__":
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
+        transforms.RandomErasing(p=0.5),
     ])
 
     dataset = VeRi(
         data_dir='datasets/VeRi/image_train',
         file='datasets/VeRi/train_label.xml',
-        transform=transform
+        transform=transform,
+        rel_mat='rel_mat.npy'       # RPTM positives are picked from this, once, over each whole vehicle ID
     )
 
     sampler = DistributedSampler(dataset, shuffle=True)
     dataloader = torch.utils.data.DataLoader(dataset,
-                                             batch_size=256,
+                                             batch_size=ANCHORS_PER_GPU,
                                              sampler=sampler,
-                                             num_workers=8,
-                                             pin_memory=True
+                                             num_workers=6,     # per GPU process
+                                             pin_memory=True,
+                                             drop_last=True
                                              )
 
-    rel_matrix = np.load('rel_mat.npy')
-
-    epochs = 100
-    for epoch in range(epochs):
+    for epoch in range(EPOCHS):
         sampler.set_epoch(epoch)
         model.train()
-        total_loss = 0.0
+        total_loss = total_ent = total_tri = 0.0
 
-        for img, label, idx in dataloader:
-            loss = 0.0
-
-            img = img.cuda(local_rank, non_blocking=True)
-            label = label.cuda(local_rank, non_blocking=True)
+        for anchor, positive, label, idx in dataloader:
+            img = torch.cat([anchor, positive]).cuda(local_rank, non_blocking=True)     # (2B, 3, H, W)
+            label = torch.cat([label, label]).cuda(local_rank, non_blocking=True)       # (2B,)
 
             optimizer.zero_grad()
-            embeds, logits = model(img)
+            feats, embeds, logits = model(img)
 
-            e_ent = ce_loss_fn(logits, label)                   # entropy loss
-            triplets = rtpm(embeds, label, idx, rel_matrix)     # RTPM triplets
+            e_ent = ce_loss_fn(logits, label)                   # entropy loss, on the post-BN branch
+            e_tri = rptm_triplet_loss(feats, label, MARGIN)     # RPTM triplet loss, on the pre-BN feature
 
-            if triplets:
-                a = embeds[[t[0] for t in triplets]]            # anchor
-                p = embeds[[t[1] for t in triplets]]            # positive
-                n = embeds[[t[2] for t in triplets]]            # negative
-
-                e_tri = tri_loss_fn(a, p, n)                    # triplet loss
-
-                # im using lambda=1.0 for both losses, might adjust later tho
-                loss = e_ent + e_tri
-            else:
-                # if there's no triplets then just use entropy loss
-                loss = e_ent
+            loss = LAMBDA_ENT * e_ent + LAMBDA_TRI * e_tri
 
             loss.backward()
             optimizer.step()
+
             total_loss += loss.item()
+            total_ent += e_ent.item()
+            total_tri += e_tri.item()
 
         scheduler.step()
 
         if local_rank == 0:
+            n = len(dataloader)
             print(
-                f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(dataloader):.4f}")
+                f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss/n:.4f} "
+                f"(ent {total_ent/n:.4f}, tri {total_tri/n:.4f}), lr: {optimizer.param_groups[0]['lr']:.6f}",
+                flush=True)
+
+            # overwrite every epoch so a job that hits the time limit still leaves usable weights
+            torch.save(model.module.state_dict(), WEIGHTS_PATH)
 
     dist.destroy_process_group()
-
-    if local_rank == 0:
-        torch.save(model.module.state_dict(
-        ), "/mnt/beegfs/home/jpindell2022/ouri_project/mltests/caridentify/results/veri_rtpm_model.pth")

@@ -8,6 +8,11 @@ from datetime import datetime
 from pathlib import Path
 
 
+# keep in sync with IBN_A_URL in model.py
+IBN_A_URL = "https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet50_ibn_a-d9d0bb7b.pth"
+IBN_A_WEIGHTS = Path(IBN_A_URL)
+
+
 def load_config(config_path: Path):
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
@@ -81,18 +86,33 @@ def main():
 
     print("\n[4/7] Transferring codebase to cluster...")    
     try:
-        run_cmd([
-            "scp",
-            str(local_dir / "train.py"),
-            str(local_dir / "model.py"),
-            str(local_dir / "dataset.py"),
-            str(local_dir / "utils.py"),
-            str(local_dir / "rel_mat.py"),
-            str(local_dir / "rel_mat.npy"),
-            str(local_dir / job_script),
-            str(project_dir / "requirements.txt"),
-            f"{remote_uri}:{remote_dir}/",
-        ])
+        files = [
+            local_dir / "train.py",
+            local_dir / "eval.py",
+            local_dir / "model.py",
+            local_dir / "dataset.py",
+            local_dir / "utils.py",
+            local_dir / "rel_mat.py",
+            local_dir / job_script,
+            project_dir / "requirements.txt",
+        ]
+
+        # the relational matrix is several GB: only upload it when there is a local copy
+        if (local_dir / "rel_mat.npy").exists():
+            files.append(local_dir / "rel_mat.npy")
+        else:
+            check_rel_mat = run_ssh(remote_uri, f"[ -f '{remote_dir}/rel_mat.npy' ] && echo 'EXISTS' || echo 'MISSING'", check=False)
+            if "MISSING" in check_rel_mat.stdout:
+                print("rel_mat.npy is missing both locally and on the cluster. Build it with rel_mat.py first.")
+                sys.exit(1)
+
+        run_cmd(["scp", *[str(f) for f in files], f"{remote_uri}:{remote_dir}/"])
+
+        # compute nodes may not have internet, so fetch the pretrained backbone from the login node
+        weights_dir = f"{remote_dir}/.cache/torch/hub/checkpoints"
+        fetch = run_ssh(remote_uri, f"mkdir -p '{weights_dir}' && cd '{weights_dir}' && ([ -f '{IBN_A_WEIGHTS.name}' ] || wget -q '{IBN_A_URL}')", check=False)
+        if fetch.returncode != 0:
+            print(f"Could not pre-download {IBN_A_WEIGHTS.name} on the login node. The job will try to download it itself.")
         
         # print("Upgrading pip...")
         # run_ssh(remote_uri, f"source '{venv_path}/bin/activate' && pip install --upgrade pip")

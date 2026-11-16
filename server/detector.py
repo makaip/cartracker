@@ -36,11 +36,19 @@ print("Cuda is available:", torch.cuda.is_available())
 
 from model import EmbeddingNet
 
+INPUT_SIZE = 240    # must match IMG_SIZE in train/train.py
+WEIGHTS = 'veri_rptm_r50ibn.pt'
+
+def _embed(classifier: EmbeddingNet, batch: torch.Tensor) -> torch.Tensor:
+    # same as train/eval.py: average the embedding of the image and its horizontal flip, then L2 normalize
+    emb = classifier(batch)[0] + classifier(torch.flip(batch, dims=[3]))[0]
+    return torch.nn.functional.normalize(emb, p=2, dim=1)
+
 def _preprocess_crop(crop_bgr: np.ndarray, device: torch.device) -> torch.Tensor:
     crop_rgb = crop_bgr[:, :, ::-1].copy()  # BGR to RGB
     # HWC -> CHW, convert to float [0, 1], push to GPU
     tensor = torch.from_numpy(crop_rgb).permute(2, 0, 1).to(device, dtype=torch.float32).div(255.0)
-    return transforms.functional.resize(tensor, [224, 224], antialias=True)
+    return transforms.functional.resize(tensor, [INPUT_SIZE, INPUT_SIZE], antialias=True)
 
 def batch_classify_cars(crops: list[np.ndarray],
                         device: torch.device, 
@@ -57,8 +65,7 @@ def batch_classify_cars(crops: list[np.ndarray],
     batch_tensor = batch_tensor.sub(mean).div(std)
 
     with torch.no_grad():
-        embeddings, _ = classifier(batch_tensor)
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        embeddings = _embed(classifier, batch_tensor)
     
     return embeddings
 
@@ -92,8 +99,7 @@ def precalc_targets(device: torch.device,
                 img_tensor = img_tensor.sub(mean).div(std)
 
                 with torch.no_grad():
-                    emb, _ = classifier(img_tensor)
-                    emb = torch.nn.functional.normalize(emb, p=2, dim=1)
+                    emb = _embed(classifier, img_tensor)
                 embs.append(emb)
         
         if embs:
@@ -138,7 +144,7 @@ def gpu_worker(
     detector.to(device)  # force GPU
 
     classifier = EmbeddingNet()
-    classifier.load_state_dict(torch.load(SERVER_DIR / 'veri_rtpm_rn50.pt', map_location=device, weights_only=True))
+    classifier.load_state_dict(torch.load(SERVER_DIR / WEIGHTS, map_location=device, weights_only=True))
     classifier.to(device)
     classifier.eval()
     classifier = torch.compile(classifier)

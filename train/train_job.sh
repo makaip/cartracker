@@ -37,4 +37,7 @@ fi
 source "$VENV_PATH/bin/activate"
 torchrun --nproc_per_node=4 train.py
 
+# mAP / CMC on the VeRi query + gallery split, plain and re-ranked
+python eval.py --weights results/veri_rptm_r50ibn.pth --rerank || echo "eval failed"
+
 echo "End time: $(date)"
