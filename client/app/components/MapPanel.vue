@@ -25,6 +25,8 @@ const { matchThreshold } = useSettings()
 
 const cameraLocations = ref<Record<string, {name: string, lat: number, lon: number}>>({})
 const markers: Record<string, any> = {}
+// last rendered look per marker, so an icon is only rebuilt when it actually changes
+const markerLooks: Record<string, string> = {}
 let mapInstance: any = null
 let L: any = null
 let resizeObserver: ResizeObserver | null = null
@@ -80,6 +82,11 @@ onMounted(async () => {
 
   for (const [uuid, loc] of Object.entries(cameraLocations.value)) {
     const marker = L.marker([loc.lat, loc.lon]).addTo(mapInstance)
+    marker.bindTooltip(loc.name, {
+      direction: 'top',
+      offset: [0, -10],
+      opacity: 0.9
+    })
     marker.on('click', () => {
       if (!isAutoMode.value) {
         selectedCamera.value = uuid
@@ -96,9 +103,10 @@ onBeforeUnmount(() => {
   mapInstance?.remove()
 })
 
+// cameraDetections is a shallow ref triggered on a throttle; no deep traversal needed
 watch([cameraDetections, trackedVehicle, cameraStatus, matchThreshold], () => {
   updateMarkers()
-}, { deep: true })
+})
 
 function updateMarkers() {
   if (!mapInstance || !L) return
@@ -164,6 +172,11 @@ function updateMarkers() {
       icon_size = 16
     }
 
+    const scoreText = score > 0 ? score.toFixed(2) : ''
+    const look = `${backgroundColor}|${borderColor}|${icon_size}|${scoreText}`
+    if (markerLooks[uuid] === look) continue
+    markerLooks[uuid] = look
+
     // use Leaflet DivIcon for full CSS control over the marker
 
     const iconHtml = `
@@ -185,7 +198,7 @@ function updateMarkers() {
         cursor: pointer;
         pointer-events: auto;
       ">
-        ${score > 0 ? score.toFixed(2) : ''}
+        ${scoreText}
       </div>
     `
 
@@ -196,14 +209,6 @@ function updateMarkers() {
       iconAnchor: [icon_size / 2, icon_size / 2 + 8],                     // center the icon on coords
       tooltipAnchor: [0, -icon_size / 2]
     }))
-
-    if (cameraLocations.value[uuid]) {
-      marker.bindTooltip(cameraLocations.value[uuid].name, { 
-        direction: 'top', 
-        offset: [0, -10],
-        opacity: 0.9
-      })
-    }
   }
 }
 </script>

@@ -6,7 +6,7 @@
 
         <UDashboardPanel grow>
             <div class="h-screen w-full flex">
-                <MainPanel />
+                <Mainpanel />
             </div>
         </UDashboardPanel>
 
