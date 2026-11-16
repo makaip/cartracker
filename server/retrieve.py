@@ -20,6 +20,10 @@ with open(SERVER_DIR / 'config.yaml', 'r') as f:
 
 FRAME_SKIP = config['frame_skip']
 
+# camera guid -> .m3u8 playlist URL (written by scrape/pbc_uuids.py)
+with open(SERVER_DIR / 'tc_pbc_urls.json', 'r') as f:
+    CAMERA_URLS = json.load(f)
+
 
 LATEST_FRAMES = {}
 
@@ -162,7 +166,7 @@ async def process_camera_stream(
     frame_queue: mp.Queue,
     camera_status: dict
 ) -> None:
-    url = f"https://pbcvideostreams1.pbc.gov/memfs/{camera_uuid}.m3u8"
+    url = CAMERA_URLS[camera_uuid]
     playback_dq = deque()
     playback_task = asyncio.create_task(smooth_playback(camera_uuid, playback_dq))
 
