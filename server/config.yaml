@@ -1,5 +1,6 @@
 job:
   script: job.sh
+  nodes: 2   # one Slurm job per node; cameras are split evenly between them (keep client app.config.ts backend.nodes equal)
 remote:
   dir: /mnt/beegfs/home/jpindell2022/ouri_project/mltests/traffictrack
   host: 131.91.163.212
@@ -9,6 +10,9 @@ server:
   ws_port: 8765
   frame_skip: 5
   num_gpus: 4
-  frame_queue_maxsize: 128
+  frame_queue_maxsize: 256   # holds at most one frame per camera
+  batch_size: 16             # frames per YOLO call on each GPU
+  playback_delay: 3.0        # seconds video runs behind live so boxes line up
   result_queue_maxsize: 512
-  profile: true
+  sighting_cooldown: 60       # seconds a tracked vehicle must be gone from a camera before it counts as a new sighting
+  profile: false

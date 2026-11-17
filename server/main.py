@@ -9,7 +9,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from pydantic import BaseModel
 import uvicorn
 
 import multiprocessing as mp
@@ -19,6 +20,7 @@ import queue
 import retrieve
 from retrieve import process_camera_stream, generate_frames
 import database
+import sightings
 
 import cProfile
 import pstats
@@ -49,23 +51,55 @@ result_queue = MP_CONTEXT.Queue(maxsize=RESULT_QUEUE_MAXSIZE)   # out: match pay
 
 # ----
 
+# set by run_hpc.py when the cameras are split across several nodes
+SHARD_INDEX = int(os.environ.get('SHARD_INDEX', 0))
+SHARD_COUNT = max(1, int(os.environ.get('SHARD_COUNT', 1)))
+
 CONNECTED_CLIENTS: set[WebSocket] = set()
 CAMERA_STATUS: dict[str, bool] = {}  # camera_uuid -> is_online
+CAMERA_NAMES: dict[str, str] = {}    # camera_uuid -> name, stored with each sighting as its location
 
 async def result_broadcaster():
     while True:
         try:
-            if not CONNECTED_CLIENTS:
-                await asyncio.sleep(0.05)
-                continue
-
+            # always drain: results also release the camera's slot for its next frame
             payload = result_queue.get_nowait()
-            retrieve.queue_detection(payload['camera_uuid'], payload['frame_id'], payload)
+            retrieve.mark_result(payload['camera_uuid'])
+
+            # sightings are recorded whether or not a client is watching
+            hits = payload.pop('sightings', None)
+            if hits:
+                camera_uuid = payload['camera_uuid']
+                await asyncio.to_thread(sightings.record, camera_uuid, CAMERA_NAMES.get(camera_uuid), hits)
+
+            if CONNECTED_CLIENTS:
+                retrieve.queue_detection(payload['camera_uuid'], payload['frame_id'], payload)
         except queue.Empty:
             await asyncio.sleep(0.01)
         except Exception as e:
             print(f"Broadcaster error: {e}")
             await asyncio.sleep(1)
+
+async def vehicle_db_watcher(update_events):
+    """reload target embeddings when vehicles.db changes on disk.
+
+    With several nodes the client adds/deletes vehicles through one server only; the
+    others share the same database file and pick the change up here.
+    """
+    def mtime():
+        try:
+            return database.DB_PATH.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    last = mtime()
+    while True:
+        await asyncio.sleep(2.0)
+        current = mtime()
+        if current != last:
+            last = current
+            for e in update_events:
+                e.set()
 
 def run_worker(*args):
     from detector import gpu_worker
@@ -99,11 +133,14 @@ async def lifespan(app: FastAPI):
         workers.append(p)
         
     app.state.update_events = update_events
+    watcher_task = asyncio.create_task(vehicle_db_watcher(update_events))
 
     camera_tasks = []
     cameras = load_cameras()
     camera_uuids = list(cameras.keys()) if isinstance(cameras, dict) else cameras
-    print(f"Starting background streams for {len(camera_uuids)} cameras...")
+    if isinstance(cameras, dict):
+        CAMERA_NAMES.update(cameras)
+    print(f"Starting background streams for {len(camera_uuids)} cameras (node {SHARD_INDEX + 1} of {SHARD_COUNT})...")
     for cam_uuid in camera_uuids:
         CAMERA_STATUS[cam_uuid] = True  # Initialize as online
         task = asyncio.create_task(process_camera_stream(cam_uuid, frame_queue, CAMERA_STATUS))
@@ -115,6 +152,7 @@ async def lifespan(app: FastAPI):
     for task in camera_tasks:
         task.cancel()
     broadcaster_task.cancel()
+    watcher_task.cancel()
     stop_event.set()
     
     for _ in workers:
@@ -155,11 +193,16 @@ UPLOAD_FOLDER = SERVER_DIR / 'uploads'
 database.init_db()
 
 def load_cameras() -> dict:
+    """cameras handled by this server; with several nodes, each takes every Nth camera"""
     try:
         with open(SERVER_DIR / 'tc_pbc.json', 'r') as f:
-            return json.load(f)
+            cameras = json.load(f)
     except FileNotFoundError:
         return {}
+
+    if SHARD_COUNT > 1:
+        return {uuid: cameras[uuid] for uuid in list(cameras)[SHARD_INDEX::SHARD_COUNT]}
+    return cameras
 
 @app.get('/cameras')
 async def get_cameras():
@@ -170,9 +213,121 @@ async def get_camera_status():
     """Return which cameras are online/offline"""
     return CAMERA_STATUS
 
+IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp'}
+
+def vehicle_images(vehicle_uuid: str) -> list[str]:
+    upload_path = UPLOAD_FOLDER / vehicle_uuid
+    if not upload_path.is_dir():
+        return []
+    return sorted(p.name for p in upload_path.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+
+def save_images(vehicle_uuid: str, pictures: list[UploadFile]) -> int:
+    """store uploaded reference images; returns how many were saved"""
+    upload_path = UPLOAD_FOLDER / vehicle_uuid
+    upload_path.mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    for f in pictures:
+        suffix = Path(f.filename or '').suffix.lower()
+        if suffix not in IMAGE_SUFFIXES:
+            continue
+        # own name: uploads from different folders may share a file name
+        with open(upload_path / f'{uuid_lib.uuid4().hex[:12]}{suffix}', 'wb') as buffer:
+            shutil.copyfileobj(f.file, buffer)
+        saved += 1
+    return saved
+
+def require_vehicle(vehicle_uuid: str) -> dict:
+    vehicle = database.get_vehicle(vehicle_uuid)
+    if vehicle is None:
+        raise HTTPException(status_code=404, detail="Unknown vehicle")
+    return vehicle
+
+def reload_targets():
+    """make the GPU workers rebuild their target embeddings; other nodes notice vehicles.db changing"""
+    database.touch_vehicles()
+    for e in app.state.update_events:
+        e.set()
+
 @app.get('/vehicles')
-async def list_vehicles():
-    return database.get_vehicles()
+def list_vehicles():
+    stats = database.sighting_stats()
+    vehicles = database.get_vehicles()
+    for v in vehicles:
+        v['tracking'] = bool(v['tracking'])
+        v['images'] = vehicle_images(v['uuid'])
+        v['sightings'] = stats.get(v['uuid'], {}).get('count', 0)
+        v['last_seen'] = stats.get(v['uuid'], {}).get('last_seen')
+    return vehicles
+
+class VehicleUpdate(BaseModel):
+    name: str | None = None
+    tracking: bool | None = None
+    threshold: float | None = None
+
+@app.patch('/vehicles/{vehicle_uuid}')
+def update_vehicle(vehicle_uuid: str, update: VehicleUpdate):
+    require_vehicle(vehicle_uuid)
+    fields = update.model_dump(exclude_none=True)
+    if 'threshold' in fields and not 0 <= fields['threshold'] <= 1:
+        raise HTTPException(status_code=400, detail="Threshold must be between 0 and 1")
+    if 'tracking' in fields:
+        fields['tracking'] = int(fields['tracking'])
+
+    database.update_vehicle(vehicle_uuid, **fields)
+    if 'tracking' in fields or 'threshold' in fields:
+        reload_targets()
+    return {"status": "updated", "uuid": vehicle_uuid}
+
+@app.get('/vehicles/{vehicle_uuid}/images/{filename}')
+def get_vehicle_image(vehicle_uuid: str, filename: str):
+    require_vehicle(vehicle_uuid)
+    if filename not in vehicle_images(vehicle_uuid):
+        raise HTTPException(status_code=404, detail="Unknown image")
+    return FileResponse(UPLOAD_FOLDER / vehicle_uuid / filename)
+
+@app.post('/vehicles/{vehicle_uuid}/images')
+def add_vehicle_images(vehicle_uuid: str, pictures: list[UploadFile] = File(...)):
+    require_vehicle(vehicle_uuid)
+    if save_images(vehicle_uuid, pictures) == 0:
+        raise HTTPException(status_code=400, detail="No supported images uploaded (jpg, png, webp)")
+    reload_targets()
+    return {"images": vehicle_images(vehicle_uuid)}
+
+@app.delete('/vehicles/{vehicle_uuid}/images/{filename}')
+def delete_vehicle_image(vehicle_uuid: str, filename: str):
+    require_vehicle(vehicle_uuid)
+    if filename not in vehicle_images(vehicle_uuid):
+        raise HTTPException(status_code=404, detail="Unknown image")
+    (UPLOAD_FOLDER / vehicle_uuid / filename).unlink()
+    reload_targets()
+    return {"images": vehicle_images(vehicle_uuid)}
+
+@app.get('/sightings')
+def list_sightings(vehicle: str | None = None, limit: int = 100, offset: int = 0, min_score: float = 0.0):
+    total, items = database.get_sightings(vehicle, max(1, min(limit, 500)), max(0, offset), min_score)
+    return {"total": total, "items": items}
+
+@app.get('/sightings/{sighting_id}/image')
+def get_sighting_image(sighting_id: int):
+    sighting = database.get_sighting(sighting_id)
+    if sighting is None or not sightings.image_path(sighting['image']).is_file():
+        raise HTTPException(status_code=404, detail="Unknown sighting")
+    return FileResponse(sightings.image_path(sighting['image']))
+
+@app.delete('/sightings/{sighting_id}')
+def delete_sighting(sighting_id: int):
+    image = database.delete_sighting(sighting_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail="Unknown sighting")
+    sightings.remove_images([image])
+    return {"status": "deleted", "id": sighting_id}
+
+@app.delete('/sightings')
+def clear_sightings(vehicle: str):
+    images = database.delete_sightings(vehicle)
+    sightings.remove_images(images)
+    return {"status": "deleted", "count": len(images)}
 
 @app.get('/')
 async def index() -> str:
@@ -204,37 +359,30 @@ async def video_feed(uuid: str):
     return StreamingResponse(generate_frames(uuid, stop_event), media_type='multipart/x-mixed-replace; boundary=frame')
 
 @app.post('/add_vehicle')
-async def add_vehicle(pictures: list[UploadFile] = File(...), name: str = Form(None)):
-    if not pictures or all(f.filename == '' for f in pictures):
-        raise HTTPException(status_code=400, detail="No pictures uploaded")
-    
+def add_vehicle(pictures: list[UploadFile] = File(...), name: str = Form(None)):
     vehicle_uuid = str(uuid_lib.uuid4())
-    upload_path = UPLOAD_FOLDER / vehicle_uuid
-    upload_path.mkdir(parents=True, exist_ok=True)
-    
-    for f in pictures:
-        if f.filename:
-            filename = os.path.basename(f.filename)
-            with open(upload_path / filename, 'wb') as buffer:
-                shutil.copyfileobj(f.file, buffer)
-            
+
+    if save_images(vehicle_uuid, pictures) == 0:
+        shutil.rmtree(UPLOAD_FOLDER / vehicle_uuid, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="No supported images uploaded (jpg, png, webp)")
+
     database.add_vehicle(vehicle_uuid, name)
     for e in app.state.update_events: e.set() # update embeddings in GPU workers
 
     return {"uuid": vehicle_uuid, "name": name}
-    
+
 @app.post('/delete_vehicle')
-async def delete_vehicle(uuid: str = Form(...)):
+def delete_vehicle(uuid: str = Form(...)):
     vehicle_uuid = uuid
-    if not vehicle_uuid:
-        raise HTTPException(status_code=400, detail="No UUID provided")
-        
+    require_vehicle(vehicle_uuid)
+
     database.delete_vehicle(vehicle_uuid)
-    
+    sightings.remove_images(database.delete_sightings(vehicle_uuid))
+
     upload_path = UPLOAD_FOLDER / vehicle_uuid
     if upload_path.exists():
         shutil.rmtree(upload_path)
-    
+
     for e in app.state.update_events: e.set() # update embeddings in GPU workers
     return {"status": "deleted", "uuid": vehicle_uuid}
 

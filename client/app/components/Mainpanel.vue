@@ -20,7 +20,7 @@
         <!-- MJPEG Video Stream -->
         <img
           ref="videoElement"
-          :src="`${backend.apiUrl}/video_feed/${selectedCamera}`"
+          :src="videoFeedUrl(selectedCamera)"
           alt="Live Camera Feed"
           style="width: 100%; height: 100%; display: block;"
           @load="onVideoLoad"
@@ -52,15 +52,13 @@
 </template>
 
 <script setup lang="ts">
-const appConfig = useAppConfig()
-const backend = (appConfig.backend as any) || { apiUrl: 'http://localhost:8765' }
-
 const {
   trackedVehicle,
   cameras,
   isAutoMode,
   selectedCamera,
   currentDetections,
+  videoFeedUrl,
   fetchCameras,
   connectWs,
   disconnectWs,

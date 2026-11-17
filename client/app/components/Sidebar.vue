@@ -4,13 +4,18 @@
     <div class="flex items-center justify-between h-12 px-4 border-b border-default shrink-0">
       <span class="font-semibold tracking-tight">cartracker</span>
       <span class="flex items-center gap-1.5 text-xs text-muted">
-        <span class="size-1.5 rounded-full" :class="isConnected ? 'bg-green-500' : 'bg-red-500'" />
-        {{ isConnected ? 'Connected' : 'Disconnected' }}
+        <span class="size-1.5 rounded-full" :class="isConnected ? 'bg-green-500' : connectedCount > 0 ? 'bg-yellow-500' : 'bg-red-500'" />
+        {{ isConnected ? 'Connected' : connectedCount > 0 ? `${connectedCount}/${backendCount} nodes` : 'Disconnected' }}
       </span>
     </div>
 
+    <!-- Live / Database -->
+    <div class="px-4 py-2 border-b border-default shrink-0">
+      <UTabs v-model="view" :items="viewTabs" :content="false" color="neutral" size="xs" class="w-full" />
+    </div>
+
     <!-- Camera -->
-    <section class="px-4 py-3 border-b border-default space-y-2">
+    <section v-if="view === 'live'" class="px-4 py-3 border-b border-default space-y-2">
       <h3 class="section-label">Camera</h3>
       <USelectMenu
         v-model="selectedCameraItem"
@@ -38,7 +43,8 @@
           No vehicles yet.
         </p>
 
-        <ul v-else class="space-y-px">
+        <!-- Live: pick the vehicle to follow -->
+        <ul v-else-if="view === 'live'" class="space-y-px">
           <li
             v-for="item in vehicleItems"
             :key="item.value"
@@ -66,11 +72,36 @@
             />
           </li>
         </ul>
+
+        <!-- Database: open a vehicle's record, switch its tracking on or off -->
+        <ul v-else class="space-y-px">
+          <li
+            v-for="vehicle in vehicles"
+            :key="vehicle.uuid"
+            class="flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer"
+            :class="databaseVehicle === vehicle.uuid ? 'bg-elevated' : 'hover:bg-elevated/50'"
+            @click="databaseVehicle = vehicle.uuid"
+          >
+            <div class="min-w-0 flex-1">
+              <div class="truncate">{{ vehicleLabel(vehicle) }}</div>
+              <div class="truncate text-xs text-dimmed">
+                {{ vehicle.sightings }} {{ vehicle.sightings === 1 ? 'sighting' : 'sightings' }}
+              </div>
+            </div>
+            <USwitch
+              :model-value="vehicle.tracking"
+              size="xs"
+              :aria-label="`Track ${vehicleLabel(vehicle)}`"
+              @click.stop
+              @update:model-value="updateVehicle(vehicle.uuid, { tracking: $event })"
+            />
+          </li>
+        </ul>
       </div>
     </section>
 
     <!-- Settings -->
-    <section class="px-4 py-3 border-t border-default space-y-2">
+    <section v-if="view === 'live'" class="px-4 py-3 border-t border-default space-y-2">
       <h3 class="section-label">Settings</h3>
       <div class="flex items-center justify-between gap-3">
         <span class="text-muted">Match threshold</span>
@@ -93,7 +124,7 @@
               ref="fileInput"
               type="file"
               multiple
-              accept="image/*"
+              accept="image/jpeg,image/png,image/webp"
               class="block w-full text-sm text-muted file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-default file:bg-elevated file:text-default file:text-sm file:cursor-pointer"
             />
           </UFormField>
@@ -110,13 +141,20 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 
-const { matchThreshold, statusPollInterval } = useSettings()
+const { matchThreshold, statusPollInterval, view } = useSettings()
+
+const viewTabs = [
+  { label: 'Live', value: 'live' },
+  { label: 'Database', value: 'database' }
+]
 
 const {
   cameraOptions,
   selectedCamera,
   isAutoMode,
-  isConnected
+  isConnected,
+  connectedCount,
+  backendCount
 } = useVideoStream()
 
 const selectedCameraItem = computed({
@@ -128,12 +166,15 @@ const selectedCameraItem = computed({
 
 const {
   trackedVehicle,
+  databaseVehicle,
+  vehicles,
   vehicleItems,
   isUploading,
   deleting,
   fetchVehicles,
   uploadVehicleFiles,
-  deleteVehicleRecord
+  deleteVehicleRecord,
+  updateVehicle
 } = useVehicles()
 
 const isModalOpen = ref(false)
@@ -145,8 +186,9 @@ onMounted(() => {
 })
 
 const uploadVehicle = async () => {
-  const success = await uploadVehicleFiles(fileInput.value?.files, vehicleName.value)
-  if (success) {
+  const uuid = await uploadVehicleFiles(fileInput.value?.files, vehicleName.value)
+  if (uuid) {
+    if (view.value === 'database') databaseVehicle.value = uuid
     isModalOpen.value = false
     vehicleName.value = ''
     if (fileInput.value) fileInput.value.value = ''
@@ -154,7 +196,7 @@ const uploadVehicle = async () => {
 }
 
 const deleteVehicle = async (uuid: string) => {
-  if (!confirm('Are you sure you want to delete this vehicle?')) return
+  if (!confirm('Delete this vehicle and its recorded sightings?')) return
   await deleteVehicleRecord(uuid)
 }
 

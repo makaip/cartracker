@@ -1,4 +1,5 @@
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import asyncio
 import json
 import time
@@ -19,16 +20,42 @@ with open(SERVER_DIR / 'config.yaml', 'r') as f:
     config = yaml.safe_load(f)['server']
 
 FRAME_SKIP = config['frame_skip']
+# seconds the displayed video runs behind the decoder, so a frame's detections
+# have time to come back from the GPUs before that frame is shown
+PLAYBACK_DELAY = float(config.get('playback_delay', 3.0))
+# a camera whose frame got no result within this many seconds may submit again
+IN_FLIGHT_TIMEOUT = 5.0
 
 # camera guid -> .m3u8 playlist URL (written by scrape/pbc_uuids.py)
 with open(SERVER_DIR / 'tc_pbc_urls.json', 'r') as f:
     CAMERA_URLS = json.load(f)
+
+# Each camera's _stream_loop blocks one thread for as long as the stream is up.
+# asyncio.to_thread uses the default executor, capped at min(32, cpus + 4) threads,
+# so only the first 32 cameras ever started. Give every camera its own thread.
+STREAM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, len(CAMERA_URLS)),
+    thread_name_prefix='camera-stream'
+)
 
 
 LATEST_FRAMES = {}
 
 DETECTION_QUEUES = {}
 BROADCAST_CALLBACK = None
+
+# camera_uuid -> time.monotonic() when its frame was handed to the GPU workers.
+# A camera submits its next frame only after the previous result came back, so the
+# GPUs are shared evenly across cameras and never fed faster than they can process.
+# Without this, 200 cameras flooded the queue and every result arrived too late to show.
+IN_FLIGHT = {}
+
+def mark_result(camera_uuid: str) -> None:
+    IN_FLIGHT.pop(camera_uuid, None)
+
+def _is_in_flight(camera_uuid: str) -> bool:
+    sent = IN_FLIGHT.get(camera_uuid)
+    return sent is not None and (time.monotonic() - sent) < IN_FLIGHT_TIMEOUT
 
 def queue_detection(camera_uuid: str, frame_id: int, payload: dict):
     if camera_uuid not in DETECTION_QUEUES:
@@ -59,11 +86,11 @@ async def smooth_playback(
             start_real_time = time.time()
             start_frame_time = frame_time
 
-        target_real_time = start_real_time + (frame_time - start_frame_time)
+        target_real_time = start_real_time + (frame_time - start_frame_time) + PLAYBACK_DELAY
         sleep_amount = target_real_time - time.time()
 
         if sleep_amount > 0:
-            await asyncio.sleep(min(sleep_amount, 1.0))
+            await asyncio.sleep(min(sleep_amount, PLAYBACK_DELAY + 1.0))
         elif sleep_amount < -5.0:
             start_real_time = time.time()
             start_frame_time = frame_time
@@ -74,9 +101,10 @@ async def smooth_playback(
             det_list = DETECTION_QUEUES[camera_uuid]
             
             payload_to_send = None
+            # send the newest result at or before the frame being shown; a result that
+            # arrives after its frame was shown is still sent, just slightly late
             while det_list and det_list[0][0] <= frame_id:
-                if det_list[0][0] == frame_id:
-                    payload_to_send = det_list[0][1]
+                payload_to_send = det_list[0][1]
                 det_list.pop(0)
                 
             if payload_to_send is not None:
@@ -118,7 +146,7 @@ def _stream_loop(
             if len(playback_dq) < 300:
                 playback_dq.append((frame_count * time_per_frame, frame_count, jpeg_bytes))
 
-            if frame_count % frame_skip == 0:
+            if frame_count % frame_skip == 0 and not _is_in_flight(camera_uuid):
                 shm = None
                 try:
                     # allocate shared memory block based on array size
@@ -135,6 +163,7 @@ def _stream_loop(
                         'dtype': frame_array.dtype.str,
                         'frame_id': frame_count
                     })
+                    IN_FLIGHT[camera_uuid] = time.monotonic()
 
                     # close local handle
                     # data persists until unlinked
@@ -172,8 +201,8 @@ async def process_camera_stream(
 
     while True:
         # attempt 1 (try normally)
-        result = await asyncio.to_thread(
-            _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
+        result = await asyncio.get_running_loop().run_in_executor(
+            STREAM_EXECUTOR, _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
         )
         
         e, frame_count = result if isinstance(result, tuple) else (result, 0)
@@ -189,8 +218,8 @@ async def process_camera_stream(
 
         # attempt 2 (refresh)
         print(f"[{camera_uuid}] Retrying stream...")
-        result = await asyncio.to_thread(
-            _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
+        result = await asyncio.get_running_loop().run_in_executor(
+            STREAM_EXECUTOR, _stream_loop, url, camera_uuid, frame_queue, camera_status, FRAME_SKIP, playback_dq
         )
         e, frame_count = result if isinstance(result, tuple) else (result, 0)
 

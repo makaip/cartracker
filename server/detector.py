@@ -37,6 +37,8 @@ print("Cuda is available:", torch.cuda.is_available())
 from model import EmbeddingNet
 
 INPUT_SIZE = 240    # must match IMG_SIZE in train/train.py
+BATCH_SIZE = int(config.get('batch_size', 16))  # frames per YOLO call
+CROP_BATCH_SIZE = 128                           # crops per embedding call
 WEIGHTS = 'veri_rptm_r50ibn.pt'
 
 def _embed(classifier: EmbeddingNet, batch: torch.Tensor) -> torch.Tensor:
@@ -69,45 +71,56 @@ def batch_classify_cars(crops: list[np.ndarray],
     
     return embeddings
 
-def precalc_targets(device: torch.device, 
+IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp'}
+
+def precalc_targets(device: torch.device,
                     classifier: EmbeddingNet
-                    ) -> dict[str, torch.Tensor]:
+                    ) -> tuple[dict[str, torch.Tensor], dict[str, float]]:
+    """embedding per vehicle, and the score a match must reach to be recorded
+    as a sighting (only for vehicles with tracking on)"""
 
     base_dir = Path(__file__).resolve().parent
     db_path = base_dir / "vehicles.db"
     uploads_dir = base_dir / "uploads"
     targets = {}
-    
-    conn = sqlite3.connect(str(db_path))
-    rows = conn.execute("SELECT uuid FROM vehicles").fetchall()
+    thresholds = {}
+
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    rows = conn.execute("SELECT uuid, tracking, threshold FROM vehicles").fetchall()
     conn.close()
 
-    for (uuid,) in rows:
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+    for uuid, tracking, threshold in rows:
         # (vehicle directory)
         vdir = uploads_dir / uuid
+        if not vdir.is_dir():
+            continue
 
         embs = []
-        for ext in ("jpg", "jpeg", "png"):
-            for img_path in vdir.glob(f"*.{ext}"):
-                img = cv2.imread(str(img_path))
-                if img is None:
-                    continue
-                
-                img_tensor = _preprocess_crop(img, device).unsqueeze(0)
-                mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-                std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
-                img_tensor = img_tensor.sub(mean).div(std)
+        for img_path in sorted(vdir.iterdir()):
+            if img_path.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
 
-                with torch.no_grad():
-                    emb = _embed(classifier, img_tensor)
-                embs.append(emb)
-        
+            img_tensor = _preprocess_crop(img, device).unsqueeze(0)
+            img_tensor = img_tensor.sub(mean).div(std)
+
+            with torch.no_grad():
+                emb = _embed(classifier, img_tensor)
+            embs.append(emb)
+
         if embs:
             mean_emb = torch.mean(torch.cat(embs, dim=0), dim=0)
             mean_emb = torch.nn.functional.normalize(mean_emb.unsqueeze(0), p=2, dim=1).squeeze(0)
             targets[uuid] = mean_emb
-    
-    return targets
+            if tracking:
+                thresholds[uuid] = float(threshold)
+
+    return targets, thresholds
 
 
 def build_target_matrix(targets: dict[str, torch.Tensor]) -> torch.Tensor | None:
@@ -125,6 +138,31 @@ def match_embedding(embedding: torch.Tensor,
     # cosine similarity: sim(a, b) = (a . b) / (||a|| * ||b||)
     # since embeddings are L2 normalized, ||a|| = ||b|| = 1, so we can just do dot product
     return torch.mm(embedding, target_matrix.t()).squeeze(0)  # shape: (num_targets,)
+
+def _load_frame(item: dict):
+    """copy a queued frame out of shared memory and free the block; None if it is gone"""
+    try:
+        shm = shared_memory.SharedMemory(name=item['shm_name'])  # reconstruct array from shared memory pointer
+    except Exception:
+        return None
+
+    try:
+        shm_array = np.ndarray(item['shape'], dtype=item['dtype'], buffer=shm.buf)
+        frame_array = shm_array.copy()  # copy immediately to release block
+    except Exception:
+        frame_array = None
+    finally:
+        # prevent mem leak
+        shm.close()
+        try:
+            shm.unlink()
+        except FileNotFoundError:
+            pass
+
+    if frame_array is None:
+        return None
+    return item['camera_uuid'], item.get('frame_id', 0), frame_array
+
 
 def gpu_worker(
         gpu_id: int,                # gpu index for worker
@@ -149,9 +187,11 @@ def gpu_worker(
     classifier.eval()
     classifier = torch.compile(classifier)
 
-    targets = precalc_targets(device, classifier)
+    targets, thresholds = precalc_targets(device, classifier)
     target_uuids = list(targets.keys())
     target_matrix = build_target_matrix(targets)
+    # per target, the score that counts as a sighting; inf when tracking is off
+    record_thresholds = [thresholds.get(u, float('inf')) for u in target_uuids]
 
     # profiling setup
     profiler = None
@@ -164,98 +204,133 @@ def gpu_worker(
         print(f"[GPU {gpu_id}] Live profiling enabled. Writing stats every 50 frames to {profile_path}")
 
     frame_count = 0
+    last_profile_dump = 0
     # event loop - update
     while not stop_event.is_set():
         if update_event.is_set():
             print(f"[GPU {gpu_id}] Updating target embeddings...")
-            targets = precalc_targets(device, classifier)
+            # clear first: a change that lands while reloading must trigger another reload
+            update_event.clear()
+            targets, thresholds = precalc_targets(device, classifier)
             target_uuids = list(targets.keys())
             target_matrix = build_target_matrix(targets)
-            update_event.clear()
+            record_thresholds = [thresholds.get(u, float('inf')) for u in target_uuids]
         
+        # take one frame (blocking), then whatever else is already waiting, up to BATCH_SIZE.
+        # one YOLO call on a batch is several times faster than one call per frame.
         try:
-            if (item := frame_queue.get(timeout=1.0)) is None:
-                continue
-
-            camera_uuid = item['camera_uuid']
-            shm_name = item['shm_name']
-            shape = item['shape']
-            dtype = item['dtype']
-            frame_id = item.get('frame_id', 0)
-
-            shm = shared_memory.SharedMemory(name=shm_name)  # reconstruct array from shared memory pointer
-
-            try:
-                shm_array = np.ndarray(shape, dtype=dtype, buffer=shm.buf)
-                frame_array = shm_array.copy()  # copy immediately to release block
-            finally:
-                # prevent mem leak
-                shm.close()
-                shm.unlink()
-        
+            item = frame_queue.get(timeout=1.0)
         except queue.Empty:
             continue
-        except Exception as e:
+        except Exception:
             continue
-            
+
+        batch = []  # (camera_uuid, frame_id, frame_array)
+        while True:
+            if item is not None:
+                frame = _load_frame(item)
+                if frame is not None:
+                    batch.append(frame)
+            if len(batch) >= BATCH_SIZE:
+                break
+            try:
+                item = frame_queue.get_nowait()
+            except queue.Empty:
+                break
+            except Exception:
+                break
+
+        if not batch:
+            continue
+
         if target_matrix is None:
             target_uuids = []
-        
+
         # YOLOv8 classes: 2=car, 3=motorcycle, 5=bus, 7=truck
-        yolo_results = detector.predict(frame_array, device=device, classes=[2, 3, 5, 7], verbose=False)
+        yolo_results = detector.predict(
+            [frame_array for _, _, frame_array in batch],
+            device=device, classes=[2, 3, 5, 7], verbose=False
+        )
 
-        frame_detections = []
+        batch_detections = [[] for _ in batch]
+        # per frame: target index -> (score, crop index) of its best match worth recording
+        batch_hits = [{} for _ in batch]
         valid_crops = []
-        valid_boxes = []
-        vehicle_ids = []
+        crop_owner = []  # (index into batch, vehicle_id, box) per crop
 
-        for i, result in enumerate(yolo_results[0].boxes):
-            x1, y1, x2, y2 = result.xyxy[0].int().tolist()
-            
-            # handle out of bounds bounding boxes securely
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(frame_array.shape[1], x2), min(frame_array.shape[0], y2)
+        for b, (_, _, frame_array) in enumerate(batch):
+            for i, result in enumerate(yolo_results[b].boxes):
+                x1, y1, x2, y2 = result.xyxy[0].int().tolist()
 
-            if y2 <= y1 or x2 <= x1:
-                continue
-                
-            car_image = frame_array[y1:y2, x1:x2]
-            valid_crops.append(car_image)
-            valid_boxes.append([x1, y1, x2, y2])
-            vehicle_ids.append(i)
+                # handle out of bounds bounding boxes securely
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(frame_array.shape[1], x2), min(frame_array.shape[0], y2)
+
+                if y2 <= y1 or x2 <= x1:
+                    continue
+
+                valid_crops.append(frame_array[y1:y2, x1:x2])
+                crop_owner.append((b, i, [x1, y1, x2, y2]))
 
         if valid_crops:
-            embeddings = batch_classify_cars(valid_crops, device, classifier)
+            best_scores = None
+            best_idxs = None
 
-            for idx, embedding in enumerate(embeddings):
+            if target_matrix is not None and len(target_uuids) > 0:
+                embeddings = torch.cat([
+                    batch_classify_cars(valid_crops[c:c + CROP_BATCH_SIZE], device, classifier)
+                    for c in range(0, len(valid_crops), CROP_BATCH_SIZE)
+                ], dim=0)
+                # cosine similarity of every crop against every target, best target per crop
+                scores, idxs = torch.mm(embeddings, target_matrix.t()).max(dim=1)
+                best_scores = scores.tolist()
+                best_idxs = idxs.tolist()
+
+            for idx, (b, vehicle_id, box) in enumerate(crop_owner):
                 sim_matrix = []
-                similarity = match_embedding(embedding.unsqueeze(0), target_matrix)
-                
-                if similarity is not None and len(target_uuids) > 0:
-                    matched_idx = similarity.argmax().item()
-                    matched_uuid = target_uuids[matched_idx]
-                    sim_matrix.append((matched_uuid, similarity.max().item()))
+                if best_scores is not None:
+                    target, score = best_idxs[idx], best_scores[idx]
+                    sim_matrix.append((target_uuids[target], score))
 
-                frame_detections.append({
-                    "vehicle_id": vehicle_ids[idx],
-                    "box": valid_boxes[idx],
+                    if score >= record_thresholds[target]:
+                        hits = batch_hits[b]
+                        if target not in hits or score > hits[target][0]:
+                            hits[target] = (score, idx)
+
+                batch_detections[b].append({
+                    "vehicle_id": vehicle_id,
+                    "box": box,
                     "matches": sim_matrix
                 })
 
-        try:
-            result_queue.put_nowait({
+        for b, (camera_uuid, frame_id, _) in enumerate(batch):
+            payload = {
                 "camera_uuid": camera_uuid,
-                "detections": frame_detections,
+                "detections": batch_detections[b],
                 "frame_id": frame_id
-            })
-        except queue.Full:
-            pass
-        except:
-            pass
+            }
+            if batch_hits[b]:
+                # just the vehicle's bounding box; main.py stores these and strips them before broadcasting
+                payload["sightings"] = [
+                    {
+                        "vehicle_uuid": target_uuids[target],
+                        "score": score,
+                        "jpeg": cv2.imencode('.jpg', valid_crops[idx], [cv2.IMWRITE_JPEG_QUALITY, 90])[1].tobytes()
+                    }
+                    for target, (score, idx) in batch_hits[b].items()
+                ]
+
+            try:
+                result_queue.put_nowait(payload)
+            except queue.Full:
+                pass
+            except:
+                pass
 
         if profiler:
-            frame_count += 1
-            if frame_count % 50 == 0:
+            frame_count += len(batch)
+            if frame_count - last_profile_dump >= 50:
+                last_profile_dump = frame_count
                 import pstats
                 profiler.disable()
                 try:

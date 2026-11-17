@@ -8,11 +8,9 @@ I also made a [dashboard](client/) to visualize it all using the Nuxt.js framewo
 
 ![Dashboard](media/dashboard.png)
 
-implemented model performance:
+You can also edit the database of cars and log sightings.
 
-Rank-1|Rank-5
--|-
-81.2%|92.0%
+![Database](media/database.png)
 
 ---
 

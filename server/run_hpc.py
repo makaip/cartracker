@@ -73,13 +73,44 @@ def get_job_state_and_node(remote_uri, job_id):
     return state, node
 
 
-def start_ssh_tunnel(local_port, remote_user, remote_host, node):
+def wait_for_running(remote_uri, job_id):
+    """poll Slurm until the job runs; returns its node, or None if it ended first"""
+    last_state = None
+    while True:
+        state, node = get_job_state_and_node(remote_uri, job_id)
+
+        if not state:
+            # Fall back to sacct for completed/finished states
+            res = run_ssh(remote_uri, f"sacct -j {job_id} --format=State --noheader -n", check=False)
+            if getattr(res, 'returncode', 1) == 0 and res.stdout.strip():
+                for line in res.stdout.splitlines():
+                    s = line.strip()
+                    if s:
+                        state = s.split()[0]
+                        break
+
+        if state and state != last_state:
+            print(f"  [{job_id}] Slurm state: {state}")
+            last_state = state
+
+        if state.startswith("RUNNING") and node:
+            print(f"  [{job_id}] RUNNING on node: {node}")
+            return node
+
+        if state.startswith(("COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL")):
+            print(f"  [{job_id}] finished with state {state}. Stopping polling.")
+            return None
+
+        time.sleep(5)
+
+
+def start_ssh_tunnel(local_port, remote_port, remote_user, remote_host, node):
     tunnel_cmd = [
         "ssh",
         *SSH_COMMON_OPTIONS,
         "-N",
         "-L",
-        f"{local_port}:localhost:{local_port}",
+        f"{local_port}:localhost:{remote_port}",
         "-J",
         f"{remote_user}@{remote_host}",
         f"{remote_user}@{node}",
@@ -107,6 +138,7 @@ def main():
     remote_dir = config["remote"]["dir"]
     job_script = config["job"]["script"]
     ws_port = config["server"]["ws_port"]
+    num_nodes = max(1, int(config["job"].get("nodes", 1)))
 
     remote_uri = f"{remote_user}@{remote_host}"
 
@@ -162,84 +194,67 @@ def main():
     remote_job_script = f"{remote_dir}/server/{job_script}"
     remote_yolo = f"{remote_dir}/.cache/ultralytics"
     remote_torch = f"{remote_dir}/.cache/torch"
-    submit_cmd = (
-        f"cd '{remote_dir}' && "
-        f"sbatch --parsable --chdir='{remote_dir}' "
-        f"--output='{remote_dir}/slurm-%j.out' "
-        f"--error='{remote_dir}/slurm-%j.err' "
-        f"--export=ALL,RUN_WORKDIR='{remote_dir}',VENV_DIR='{venv_path}',YOLO_CONFIG_DIR='{remote_yolo}',TORCH_HOME='{remote_torch}' "
-        f"'{remote_job_script}'"
-    )
+    # one job per node; node i handles every num_nodes-th camera and is reached
+    # locally on port ws_port + i
+    job_ids = []
+    for shard in range(num_nodes):
+        submit_cmd = (
+            f"cd '{remote_dir}' && "
+            f"sbatch --parsable --chdir='{remote_dir}' "
+            f"--output='{remote_dir}/slurm-%j.out' "
+            f"--error='{remote_dir}/slurm-%j.err' "
+            f"--export=ALL,RUN_WORKDIR='{remote_dir}',VENV_DIR='{venv_path}',YOLO_CONFIG_DIR='{remote_yolo}',TORCH_HOME='{remote_torch}',"
+            f"SHARD_INDEX={shard},SHARD_COUNT={num_nodes} "
+            f"'{remote_job_script}'"
+        )
 
-    print(f"  Submitting job: {job_script} ...")
-    result = run_ssh(remote_uri, submit_cmd)
-    job_id = result.stdout.strip().split(";")[0]
+        print(f"  Submitting job {shard + 1}/{num_nodes}: {job_script} ...")
+        result = run_ssh(remote_uri, submit_cmd)
+        job_id = result.stdout.strip().split(";")[0]
 
-    if not job_id.isdigit():
-        print(f"Failed to parse Slurm Job ID from output:\n{result.stdout}\n{result.stderr}")
-        sys.exit(1)
+        if not job_id.isdigit():
+            print(f"Failed to parse Slurm Job ID from output:\n{result.stdout}\n{result.stderr}")
+            for submitted in job_ids:
+                run_ssh(remote_uri, f"scancel {submitted}", check=False)
+            sys.exit(1)
 
-    print(f"  Slurm Job ID : {job_id}")
-    print(f"  stdout log   : {remote_dir}/slurm-{job_id}.out")
-    print(f"  stderr log   : {remote_dir}/slurm-{job_id}.err")
-    # Poll Slurm for job state until it starts running (or finishes)
-    last_state = None
-    remote_node = None
+        job_ids.append(job_id)
+        print(f"  Slurm Job ID : {job_id}")
+        print(f"  stdout log   : {remote_dir}/slurm-{job_id}.out")
+        print(f"  stderr log   : {remote_dir}/slurm-{job_id}.err")
+
     print("  Polling job state until RUNNING...")
-    while True:
-        state, remote_node = get_job_state_and_node(remote_uri, job_id)
-
-        if not state:
-            # Fall back to sacct for completed/finished states
-            res = run_ssh(remote_uri, f"sacct -j {job_id} --format=State --noheader -n", check=False)
-            if getattr(res, 'returncode', 1) == 0 and res.stdout.strip():
-                for line in res.stdout.splitlines():
-                    s = line.strip()
-                    if s:
-                        state = s.split()[0]
-                        break
-
-        if state and state != last_state:
-            print(f"  Slurm state: {state}")
-            last_state = state
-
-        if state.startswith("RUNNING") and remote_node:
-            print(f"  Job is now RUNNING on node: {remote_node}")
-            break
-
-        if state.startswith("COMPLETED") or state.startswith("FAILED") or state.startswith("CANCELLED") or state.startswith("TIMEOUT") or state.startswith("NODE_FAIL"):
-            print(f"  Job finished with state {state}. Stopping polling.")
-            break
-
-        time.sleep(5)
-
-    tunnel_proc = None
-    if remote_node:
-        tunnel_proc = start_ssh_tunnel(ws_port, remote_user, remote_host, remote_node)
-    else:
-        print("  No running node found; SSH tunnel not started.")
+    tunnels = []
+    for shard, job_id in enumerate(job_ids):
+        remote_node = wait_for_running(remote_uri, job_id)
+        if remote_node:
+            local_port = ws_port + shard
+            tunnels.append(start_ssh_tunnel(local_port, ws_port, remote_user, remote_host, remote_node))
+            print(f"  Node {shard + 1}/{num_nodes}: http://localhost:{local_port}")
+        else:
+            print(f"  [{job_id}] No running node found; SSH tunnel not started.")
 
     print("press q to cancel job")
-    c = False
-    while c is False:
-        if tunnel_proc is not None and tunnel_proc.poll() is not None:
-            print(f"SSH tunnel exited with code {tunnel_proc.returncode}.")
-            tunnel_proc = None
+    while True:
+        for tunnel_proc in list(tunnels):
+            if tunnel_proc.poll() is not None:
+                print(f"SSH tunnel exited with code {tunnel_proc.returncode}.")
+                tunnels.remove(tunnel_proc)
         c = input()
         if c.lower() == "q":
-            if tunnel_proc is not None and tunnel_proc.poll() is None:
-                print("Stopping SSH tunnel...")
-                tunnel_proc.terminate()
-                try:
-                    tunnel_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    tunnel_proc.kill()
-                    tunnel_proc.wait(timeout=5)
-            print(f"Cancelling job {job_id}...")
-            run_ssh(remote_uri, f"scancel {job_id}")
+            for tunnel_proc in tunnels:
+                if tunnel_proc.poll() is None:
+                    print("Stopping SSH tunnel...")
+                    tunnel_proc.terminate()
+                    try:
+                        tunnel_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        tunnel_proc.kill()
+                        tunnel_proc.wait(timeout=5)
+            print(f"Cancelling job(s) {' '.join(job_ids)}...")
+            run_ssh(remote_uri, f"scancel {' '.join(job_ids)}")
             print("Cancelled.")
             break
-
 
 if __name__ == "__main__":
     main()
